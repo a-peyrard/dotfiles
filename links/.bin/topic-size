@@ -1,0 +1,119 @@
+#!/bin/bash
+
+# Kafka Message Counter
+# This script counts the current number of messages in a Kafka topic,
+# accounting for retention policies by comparing earliest and latest offsets
+
+# Display usage information
+function show_usage {
+    echo "Usage: $0 --bootstrap-server <BROKER_URIS> --topic <TOPIC_NAME>"
+    echo
+    echo "Options:"
+    echo "  --bootstrap-server   Kafka broker URIs (required)"
+    echo "  --topic              Kafka topic name (required)"
+    echo "  --help               Display this help message"
+    exit 1
+}
+
+# Parse command line arguments
+BOOTSTRAP_SERVER=""
+TOPIC=""
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --bootstrap-server)
+            BOOTSTRAP_SERVER="$2"
+            shift 2
+            ;;
+        --topic)
+            TOPIC="$2"
+            shift 2
+            ;;
+        --help)
+            show_usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            ;;
+    esac
+done
+
+# Check if required parameters are provided
+if [[ -z "$BOOTSTRAP_SERVER" || -z "$TOPIC" ]]; then
+    echo "Error: Missing required parameters"
+    show_usage
+fi
+
+echo "Counting messages in topic: $TOPIC"
+echo "Connecting to brokers: $BOOTSTRAP_SERVER"
+echo
+
+# Get earliest offsets for all partitions
+echo "Getting earliest offsets..."
+EARLIEST_OFFSETS=$(kafka-get-offsets --bootstrap-server "$BOOTSTRAP_SERVER" --topic "$TOPIC" --time -2)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to get earliest offsets"
+    exit 1
+fi
+
+# Get latest offsets for all partitions
+echo "Getting latest offsets..."
+LATEST_OFFSETS=$(kafka-get-offsets --bootstrap-server "$BOOTSTRAP_SERVER" --topic "$TOPIC" --time -1)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to get latest offsets"
+    exit 1
+fi
+
+# Process offsets and calculate message counts
+echo "Calculating message counts..."
+echo
+
+# Initialize variables
+TOTAL_MESSAGES=0
+PARTITION_COUNT=0
+
+# Create temporary files to store earliest and latest offsets
+TEMP_DIR=$(mktemp -d)
+EARLIEST_FILE="$TEMP_DIR/earliest.txt"
+LATEST_FILE="$TEMP_DIR/latest.txt"
+
+echo "$EARLIEST_OFFSETS" > "$EARLIEST_FILE"
+echo "$LATEST_OFFSETS" > "$LATEST_FILE"
+
+# Print the headers with proper spacing
+printf "%-10s %-15s %-13s %-14s\n" "PARTITION" "EARLIEST OFFSET" "LATEST OFFSET" "MESSAGE COUNT"
+printf "%-10s %-15s %-13s %-14s\n" "----------" "---------------" "-------------" "--------------"
+
+# Process each partition
+while IFS= read -r LATEST_LINE; do
+    # Extract partition number
+    PARTITION=$(echo "$LATEST_LINE" | cut -d ':' -f 2)
+    LATEST_OFFSET=$(echo "$LATEST_LINE" | cut -d ':' -f 3)
+    
+    # Find corresponding earliest offset for this partition
+    EARLIEST_LINE=$(grep ":$PARTITION:" "$EARLIEST_FILE")
+    EARLIEST_OFFSET=$(echo "$EARLIEST_LINE" | cut -d ':' -f 3)
+    
+    # Calculate message count for this partition
+    MESSAGE_COUNT=$((LATEST_OFFSET - EARLIEST_OFFSET))
+    
+    # Add to total
+    TOTAL_MESSAGES=$((TOTAL_MESSAGES + MESSAGE_COUNT))
+    PARTITION_COUNT=$((PARTITION_COUNT + 1))
+    
+    # Display partition details with proper spacing
+    printf "%-10s %-15s %-13s %-14s\n" "$PARTITION" "$EARLIEST_OFFSET" "$LATEST_OFFSET" "$MESSAGE_COUNT"
+    
+done < "$LATEST_FILE"
+
+# Print totals with proper spacing
+printf "%-10s %-15s %-13s %-14s\n" "----------" "---------------" "-------------" "--------------"
+printf "%-10s %-15s %-13s %-14s\n" "TOTAL" "-" "-" "$TOTAL_MESSAGES"
+
+echo
+echo "Summary: $TOPIC has $TOTAL_MESSAGES messages across $PARTITION_COUNT partition(s)"
+
+# Clean up temporary files
+rm -rf "$TEMP_DIR"
