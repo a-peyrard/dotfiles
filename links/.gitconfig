@@ -68,6 +68,7 @@
 	ls-modification = "!f() { cd -- ${GIT_PREFIX:-.}; git ls-tree -r --name-only HEAD | while read filename; do echo "$(git log -1 --date=iso --format=\"%ad | %h | %an |\" -- $filename) $filename"; done | sort; };f"
 
 	message = show -s --format=%B
+	branches = for-each-ref --sort=-committerdate --format='%(color:green)%(refname:short)%(color:reset) %(color:red)%(upstream:short)%(color:reset) %(objectname:short) %(color:yellow)%(committerdate:relative)%(color:reset) %(color:blue)%(authorname)%(color:reset) %(subject)' refs/heads/
 
 [pull]
 	rebase = merges
