@@ -1,71 +1,84 @@
 #! /usr/bin/env bash
 
-# Get the total number of displays connected
+STATE_FILE="/tmp/yabai_display_state"
+POSITIONS_FILE="/tmp/window_positions.json"
+
 display_count=$(yabai -m query --displays | jq length)
 
 echo -e "\n============== Executing on $(date) (w/ ${display_count} displays) ==============="
 
-save_window_positions() {
-  # Phase 1: Read positions from yabai
-  yabai -m query --windows |
-    jq '[.[] | {window: .id, app: .app, title: .title, space: .space, display: .display, position: {x: .frame.x, y: .frame.y}}]' > /tmp/window_positions_raw.json
+save_display_count() {
+  echo "$1" > "$STATE_FILE"
+}
 
-  # Phase 2: Perform the translation if on 1 display
-  if [ "$display_count" -eq 1 ]; then
+save_window_positions() {
+  local current_displays=$(yabai -m query --displays | jq length)
+  
+  yabai -m query --windows |
+    jq '[.[] | {window: .id, app: .app, title: .title, space: .space, display: .display}]' > /tmp/window_positions_raw.json
+
+  # Always store in "1-display canonical format"
+  if [ "$current_displays" -eq 2 ]; then
     jq '[.[] | {
       window: .window,
       app: .app,
       title: .title,
-      space: (if .space == 2 then 11 elif .space == 3 then 12 else .space end),
-      display: .display,
-      position: .position
-    }]' /tmp/window_positions_raw.json > /tmp/window_positions.json
+      space: (if .space == 11 then 3 else .space end),
+      display: .display
+    }]' /tmp/window_positions_raw.json > "$POSITIONS_FILE"
+  elif [ "$current_displays" -eq 3 ]; then
+    jq '[.[] | {
+      window: .window,
+      app: .app,
+      title: .title,
+      space: (if .space == 11 then 2 elif .space == 12 then 3 else .space end),
+      display: .display
+    }]' /tmp/window_positions_raw.json > "$POSITIONS_FILE"
   else
-    # If 3 displays, no translation needed, just copy the raw data
-    cp /tmp/window_positions_raw.json /tmp/window_positions.json
+    cp /tmp/window_positions_raw.json "$POSITIONS_FILE"
   fi
 
-  echo "Window positions saved for ${display_count} displays."
+  echo "Window positions saved at $(date)"
 }
 
-restore_window_positions() {
-  display_count=$1
-	force=$2
-  positions_file="/tmp/window_positions.json"
-  echo "Restoring window positions..."
+restore_and_transform() {
+  local to=$1
   
-  if [ -f "$positions_file" ]; then
-    jq -r '.[] | "\(.window) \(.space) \(.app)"' "$positions_file" | while read -r window_id space_id app_name; do
-      final_space_id=$space_id
-
-      # Translate spaces based on the display count
-      if [ "$display_count" -eq 1 ]; then
-        case "$space_id" in
-          11) final_space_id=2 ;;
-          12) final_space_id=3 ;;
-        esac
-      elif [ "$display_count" -eq 3 ] && [ "$force" = "true" ]; then
-        case "$space_id" in
-          2) final_space_id=11 ;;
-          3) final_space_id=12 ;;
-        esac
-      fi
-
-      echo "Restoring window ${app_name} to space ${final_space_id} (window #${window_id})"
-      yabai -m window "$window_id" --space "$final_space_id"
-    done
-    echo "Window positions restored."
-  else
-    echo "No window positions file found."
+  if [ ! -f "$POSITIONS_FILE" ]; then
+    echo "No positions file found, skipping transformation"
+    return
   fi
+  
+  echo "Restoring windows for ${to} displays..."
+  
+  echo "DEBUG: Firefox position in dump:"
+  jq '.[] | select(.app == "Firefox")' "$POSITIONS_FILE"
+  
+  # Transform FROM canonical (1-display) format TO current display count
+  local space_map=""
+  case "$to" in
+    1) space_map='.space' ;; # No transformation needed, already in canonical format
+    2) space_map='if .space == 3 then 11 else .space end' ;;
+    3) space_map='if .space == 2 then 11 elif .space == 3 then 12 else .space end' ;;
+    *) 
+      echo "Unknown display count: ${to}"
+      return
+      ;;
+  esac
+  
+  jq -r '[.[] | {window: .window, app: .app, new_space: ('"$space_map"')}] | .[] | "\(.window) \(.new_space) \(.app)"' "$POSITIONS_FILE" | \
+  while read -r window_id new_space app_name; do
+    echo "Moving window ${app_name} to space ${new_space} (window #${window_id})"
+    yabai -m window "$window_id" --space "$new_space" 2>/dev/null || echo "  Failed to move window ${window_id}"
+  done
 }
 
 if [ "$1" = "dump" ]; then
   save_window_positions
-elif [ "$1" = "restore" ]; then
-  restore_window_positions $2
+  save_display_count "$display_count"
 elif [ "$1" = "transform" ]; then
-  restore_window_positions $display_count
-elif [ "$1" = "fix" ]; then
-  restore_window_positions 3 true
+  restore_and_transform "$display_count"
+  save_display_count "$display_count"
+else
+  echo "Usage: $0 {dump|transform}"
 fi
