@@ -203,15 +203,15 @@ brew-install ocaml
 brew-install node
 
 # middlewares
-brew-install apache-spark
-brew-install kafka
+#brew-install apache-spark
+#brew-install kafka
 
 # mongo
-brew tap mongodb/brew
-brew-install mongodb/brew/mongodb-community@3.6
-brew-cask-install robo-3t
+#brew tap mongodb/brew
+#brew-install mongodb/brew/mongodb-community@3.6
+#brew-cask-install robo-3t
 
-brew-install postgresql
+#brew-install postgresql
 
 # tune macos "quick look" to handle more files
 brew-cask-install qlstephen
@@ -231,15 +231,15 @@ brew-install docker
 
 # some macos apps
 brew-cask-install alfred
-brew-cask-install hammerspoon
-brew-cask-install yakyak
+#brew-cask-install hammerspoon
+#brew-cask-install yakyak
 brew-cask-install firefox
 brew-cask-install homebrew/cask-versions/firefox-developer-edition
-brew-cask-install evernote
-brew-cask-install spectacle
+#brew-cask-install evernote
+#brew-cask-install spectacle
 brew-cask-install iterm2
 brew-cask-install visual-studio-code
-brew-cask-install bitbar
+#brew-cask-install bitbar
 brew-cask-install jetbrains-toolbox
 brew-cask-install bartender # remove space from menu bar
 
