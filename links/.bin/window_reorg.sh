@@ -23,7 +23,7 @@ save_window_positions() {
       window: .window,
       app: .app,
       title: .title,
-      space: (if .space == 11 then 3 else .space end),
+      space: (if .space == 11 then 2 else .space end),
       display: .display
     }]' /tmp/window_positions_raw.json > "$POSITIONS_FILE"
   elif [ "$current_displays" -eq 3 ]; then
@@ -58,7 +58,7 @@ restore_and_transform() {
   local space_map=""
   case "$to" in
     1) space_map='.space' ;; # No transformation needed, already in canonical format
-    2) space_map='if .space == 3 then 11 else .space end' ;;
+    2) space_map='if .space == 2 then 11 else .space end' ;;
     3) space_map='if .space == 2 then 11 elif .space == 3 then 12 else .space end' ;;
     *) 
       echo "Unknown display count: ${to}"
