@@ -21,10 +21,10 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 ###############################################################################
 
 # Set computer name (as done via System Preferences → Sharing)
-sudo scutil --set ComputerName "airconrad"
-sudo scutil --set HostName "airconrad"
-sudo scutil --set LocalHostName "airconrad"
-sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.smb.server NetBIOSName -string "airconrad"
+#sudo scutil --set ComputerName "airconrad"
+#sudo scutil --set HostName "airconrad"
+#sudo scutil --set LocalHostName "airconrad"
+#sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.smb.server NetBIOSName -string "airconrad"
 
 # Disable the sound effects on boot 🙉
 sudo nvram SystemAudioVolume=" "
@@ -64,7 +64,7 @@ defaults write NSGlobalDomain PMPrintingExpandedStateForPrint -bool true
 defaults write NSGlobalDomain PMPrintingExpandedStateForPrint2 -bool true
 
 # Save to disk (not to iCloud) by default
-defaults write NSGlobalDomain NSDocumentSaveNewDocumentsToCloud -bool false
+#defaults write NSGlobalDomain NSDocumentSaveNewDocumentsToCloud -bool false
 
 # Automatically quit printer app once the print jobs complete
 defaults write com.apple.print.PrintingPrefs "Quit When Finished" -bool true
@@ -194,34 +194,34 @@ launchctl unload -w /System/Library/LaunchAgents/com.apple.rcd.plist 2> /dev/nul
 ###############################################################################
 
 # Enable lid wakeup
-sudo pmset -a lidwake 1
+#sudo pmset -a lidwake 1
 
 # Restart automatically on power loss
-sudo pmset -a autorestart 1
+#sudo pmset -a autorestart 1
 
 # Restart automatically if the computer freezes
-sudo systemsetup -setrestartfreeze on
+#sudo systemsetup -setrestartfreeze on
 
 # Sleep the display after 15 minutes
-sudo pmset -a displaysleep 15
+#sudo pmset -a displaysleep 15
 
 # Disable machine sleep while charging
-sudo pmset -c sleep 0
+#sudo pmset -c sleep 0
 
 # Set machine sleep to 5 minutes on battery
-sudo pmset -b sleep 5
+#sudo pmset -b sleep 5
 
 # Set standby delay to 30 minutes (default is 1 hour)
-sudo pmset -a standbydelay 1800
+#sudo pmset -a standbydelay 1800
 
 # Never go into computer sleep mode
-sudo systemsetup -setcomputersleep Off > /dev/null
+#sudo systemsetup -setcomputersleep Off > /dev/null
 
 # Hibernation mode
 # 0: Disable hibernation (speeds up entering sleep mode)
 # 3: Copy RAM to disk so the system state can still be restored in case of a
 #    power failure.
-sudo pmset -a hibernatemode 3
+#sudo pmset -a hibernatemode 3
 
 # Remove the sleep image file to save disk space
 # sudo rm /private/var/vm/sleepimage
@@ -863,7 +863,7 @@ defaults write com.operasoftware.OperaDeveloper PMPrintingExpandedStateForPrint2
 ###############################################################################
 
 # Set up my preferred keyboard shortcuts
-cp -r bootstrap/init/spectacle.json ~/Library/Application\ Support/Spectacle/Shortcuts.json 2> /dev/null
+#cp -r bootstrap/init/spectacle.json ~/Library/Application\ Support/Spectacle/Shortcuts.json 2> /dev/null
 
 ###############################################################################
 # Transmission.app                                                            #
