@@ -56,6 +56,23 @@ fpath+=${ZSH_CUSTOM:-${ZSH:-~/.oh-my-zsh}/custom}/plugins/zsh-completions/src
 
 source $ZSH/oh-my-zsh.sh
 
+# add all env files from env.d
+for env_file in $(find ~/.env.d/ -name "*.env"); do
+	source $env_file
+done
+
+# add global aliases
+source ~/.aliases
+
+# private zshenv if it exists
+if test -f ~/.zshenv.private; then
+	source ~/.zshenv.private
+fi
+
+# reload the shell
+alias reload="exec ${SHELL} -l"
+
+
 # User configuration
 
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -73,17 +90,10 @@ export ARCHFLAGS="-arch arm64"
 # ssh
 # export SSH_KEY_PATH="~/.ssh/dsa_id"
 
-autoload -Uz compinit && compinit
-
-source ~/.zshenv
-if test -f ~/.zshenv.private; then
-	source ~/.zshenv.private
-fi
-
-eval "$(ssh-agent)"
-
 # Set PATH, MANPATH, etc., for Homebrew.
 eval "$(/opt/homebrew/bin/brew shellenv)"
+
+eval "$(ssh-agent)"
 
 export HISTSIZE=999999999
 export SAVEHIST=$HISTSIZE
@@ -92,5 +102,4 @@ export SAVEHIST=$HISTSIZE
 export SDKMAN_DIR="$HOME/.sdkman"
 [[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
 
-. "$HOME/.local/bin/env"
 eval "$(uv generate-shell-completion zsh)"
