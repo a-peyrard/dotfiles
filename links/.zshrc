@@ -56,8 +56,17 @@ fpath+=${ZSH_CUSTOM:-${ZSH:-~/.oh-my-zsh}/custom}/plugins/zsh-completions/src
 
 source $ZSH/oh-my-zsh.sh
 
+# User configuration
+
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+# export MANPATH="/usr/local/man:$MANPATH"
+
+# Set PATH, MANPATH, etc., for Homebrew.
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 # add all env files from env.d
 for env_file in $(find ~/.env.d/ -name "*.env"); do
+	#echo "sourcing file $env_file"
 	source $env_file
 done
 
@@ -72,12 +81,6 @@ fi
 # reload the shell
 alias reload="exec ${SHELL} -l"
 
-
-# User configuration
-
-export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
-# export MANPATH="/usr/local/man:$MANPATH"
-
 # You may need to manually set your language environment
 export LANG=en_US.UTF-8
 
@@ -89,9 +92,6 @@ export ARCHFLAGS="-arch arm64"
 
 # ssh
 # export SSH_KEY_PATH="~/.ssh/dsa_id"
-
-# Set PATH, MANPATH, etc., for Homebrew.
-eval "$(/opt/homebrew/bin/brew shellenv)"
 
 eval "$(ssh-agent)"
 
