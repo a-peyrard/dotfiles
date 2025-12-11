@@ -1,105 +1,96 @@
-# Path to your oh-my-zsh installation.
-export ZSH=$HOME/.oh-my-zsh
+# ~/.zshrc - Zsh configuration without Oh My Zsh
+# Modern setup using Starship prompt and modular env.d configuration
 
+# =============================================================================
+# Shell Options
+# =============================================================================
+
+# Don't complete aliases (useful for git aliases)
 setopt no_complete_aliases
 
-# Set name of the theme to load.
-# Look in ~/.oh-my-zsh/themes/
-# Optionally, if you set this to "random", it'll load a random theme each
-# time that oh-my-zsh is loaded.
-ZSH_THEME="avitperso"
+# History configuration
+export HISTSIZE=999999999
+export SAVEHIST=$HISTSIZE
+setopt EXTENDED_HISTORY          # Write the history file in :start:elapsed;command format
+setopt SHARE_HISTORY             # Share history between all sessions
+setopt HIST_EXPIRE_DUPS_FIRST    # Expire duplicate entries first when trimming history
+setopt HIST_IGNORE_DUPS          # Don't record an entry that was just recorded again
+setopt HIST_IGNORE_ALL_DUPS      # Delete old recorded entry if new entry is a duplicate
+setopt HIST_FIND_NO_DUPS         # Do not display a line previously found
+setopt HIST_IGNORE_SPACE         # Don't record an entry starting with a space
+setopt HIST_SAVE_NO_DUPS         # Don't write duplicate entries in the history file
 
-# Uncomment the following line to use case-sensitive completion.
-# CASE_SENSITIVE="true"
+# =============================================================================
+# Environment Variables
+# =============================================================================
 
-# Uncomment the following line to disable bi-weekly auto-update checks.
-# DISABLE_AUTO_UPDATE="true"
-
-# Uncomment the following line to change how often to auto-update (in days).
-# export UPDATE_ZSH_DAYS=13
-
-# Uncomment the following line to disable colors in ls.
-# DISABLE_LS_COLORS="true"
-
-# Uncomment the following line to disable auto-setting terminal title.
-DISABLE_AUTO_TITLE="true"
-
-# Uncomment the following line to enable command auto-correction.
-# ENABLE_CORRECTION="true"
-
-# Uncomment the following line to display red dots whilst waiting for completion.
-# COMPLETION_WAITING_DOTS="true"
-
-# Uncomment the following line if you want to disable marking untracked files
-# under VCS as dirty. This makes repository status check for large repositories
-# much, much faster.
-# DISABLE_UNTRACKED_FILES_DIRTY="true"
-
-# Uncomment the following line if you want to change the command execution time
-# stamp shown in the history command output.
-# The optional three formats: "mm/dd/yyyy"|"dd.mm.yyyy"|"yyyy-mm-dd"
-# HIST_STAMPS="mm/dd/yyyy"
-
-# Would you like to use another custom folder than $ZSH/custom?
-# ZSH_CUSTOM=/path/to/new-custom-folder
-
-# Which plugins would you like to load? (plugins can be found in ~/.oh-my-zsh/plugins/*)
-# Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
-# Example format: plugins=(rails git textmate ruby lighthouse)
-# Add wisely, as too many plugins slow down shell startup.
-plugins=(gitfast autojump macos web-search brew npm docker node fzf-tab pip python rust)
-# fzf-tab for fzf completions...
-# zsh-completions for regular ones
-
-# custom completion
-fpath+=${ZSH_CUSTOM:-${ZSH:-~/.oh-my-zsh}/custom}/plugins/zsh-completions/src
-
-source $ZSH/oh-my-zsh.sh
-
-# User configuration
-
+# Set PATH
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
-# export MANPATH="/usr/local/man:$MANPATH"
 
-# Set PATH, MANPATH, etc., for Homebrew.
+# Set PATH, MANPATH, etc., for Homebrew
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
-# add all env files from env.d
-for env_file in $(find ~/.env.d/ -name "*.env"); do
-	#echo "sourcing file $env_file"
-	source $env_file
-done
-
-# add global aliases
-source ~/.aliases
-
-# private zshenv if it exists
-if test -f ~/.zshenv.private; then
-	source ~/.zshenv.private
-fi
-
-# reload the shell
-alias reload="exec ${SHELL} -l"
-
-# You may need to manually set your language environment
+# Language environment
 export LANG=en_US.UTF-8
 
-# Preferred editor for local and remote sessions
+# Preferred editor
 export EDITOR='vim'
 
 # Compilation flags
 export ARCHFLAGS="-arch arm64"
 
-# ssh
-# export SSH_KEY_PATH="~/.ssh/dsa_id"
+# =============================================================================
+# Load Modular Environment Configuration
+# =============================================================================
 
-eval "$(ssh-agent)"
+# Source all env files from env.d in numeric order (like boot.d)
+# Files are prefixed with numbers to control load order:
+#   00-09: Critical initialization (completions, shell options)
+#   10-89: Main environment configuration (tools, languages, paths)
+#   90-98: Late-loading plugins (fzf-tab, starship)
+#   99:    Must load last (syntax highlighting)
+if [ -d ~/.env.d ]; then
+  for env_file in $(find ~/.env.d/ -name "*.env" | sort); do
+    source "$env_file"
+  done
+fi
 
-export HISTSIZE=999999999
-export SAVEHIST=$HISTSIZE
+# =============================================================================
+# Global Aliases
+# =============================================================================
 
-#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
+if [ -f ~/.aliases ]; then
+  source ~/.aliases
+fi
+
+# =============================================================================
+# Private Configuration
+# =============================================================================
+
+# Private zshenv if it exists
+if [ -f ~/.zshenv.private ]; then
+  source ~/.zshenv.private
+fi
+
+# =============================================================================
+# Utility Functions and Aliases
+# =============================================================================
+
+# Reload the shell
+alias reload="exec ${SHELL} -l"
+
+# Start ssh-agent
+eval "$(ssh-agent)" &>/dev/null
+
+# =============================================================================
+# SDKMan (must be at end)
+# =============================================================================
+
 export SDKMAN_DIR="$HOME/.sdkman"
 [[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
+
+# =============================================================================
+# UV Completion
+# =============================================================================
 
 eval "$(uv generate-shell-completion zsh)"

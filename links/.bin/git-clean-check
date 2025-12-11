@@ -1,0 +1,7 @@
+#!/usr/bin/env zsh
+# Check if git repo is clean and output checkmark
+if git rev-parse --git-dir > /dev/null 2>&1; then
+  if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
+    echo "✔"
+  fi
+fi

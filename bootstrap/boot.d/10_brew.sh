@@ -224,6 +224,7 @@ brew-install cliclick
 brew-install zsh
 brew-install rbenv
 brew-install zsh-syntax-highlighting
+brew-install starship
 
 # docker
 brew-install docker
