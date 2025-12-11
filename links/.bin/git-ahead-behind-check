@@ -1,0 +1,15 @@
+#!/usr/bin/env zsh
+# Check if branch is ahead/behind remote
+if git rev-parse --git-dir > /dev/null 2>&1; then
+  local ahead behind
+  ahead=$(git rev-list --count @{u}..HEAD 2>/dev/null)
+  behind=$(git rev-list --count HEAD..@{u} 2>/dev/null)
+
+  if [[ -n "$ahead" && "$ahead" -gt 0 ]] && [[ -n "$behind" && "$behind" -gt 0 ]]; then
+    echo "⇡${ahead}⇣${behind}"
+  elif [[ -n "$ahead" && "$ahead" -gt 0 ]]; then
+    echo "⇡${ahead}"
+  elif [[ -n "$behind" && "$behind" -gt 0 ]]; then
+    echo "⇣${behind}"
+  fi
+fi

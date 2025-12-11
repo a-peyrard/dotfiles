@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
-zsh_custom_path="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+# Install fzf-tab standalone (no longer needs OMZ)
+fzf_tab_path="$HOME/.zsh/plugins/fzf-tab"
 
-git clone https://github.com/Aloxaf/fzf-tab ${zsh_custom_path}/plugins/fzf-tab
+if [ ! -d "$fzf_tab_path" ]; then
+  git clone https://github.com/Aloxaf/fzf-tab "$fzf_tab_path"
+fi

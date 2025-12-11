@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Package dotfiles by resolving symlinks into a portable tarball
+# Usage: dotfiles-package [output-path]
+# Default output: /tmp/dotfiles.tar.gz
+
+set -e
+
+OUTPUT="${1:-/tmp/dotfiles.tar.gz}"
+TEMP_DIR=$(mktemp -d)
+PACKAGE_DIR="$TEMP_DIR/dotfiles"
+
+echo "📦 Packaging dotfiles..."
+echo "   Output: $OUTPUT"
+
+# Create package directory structure
+mkdir -p "$PACKAGE_DIR"
+
+# Copy bootstrap scripts and utilities (without symlinks)
+echo "   Copying bootstrap scripts..."
+cp -r bootstrap "$PACKAGE_DIR/"
+cp -r util "$PACKAGE_DIR/"
+cp install.sh "$PACKAGE_DIR/"
+
+# Copy .claude directory if it exists
+if [ -d .claude ]; then
+    echo "   Copying documentation..."
+    cp -r .claude "$PACKAGE_DIR/"
+fi
+
+# Create links directory and resolve all symlinks
+echo "   Resolving links/ symlinks..."
+mkdir -p "$PACKAGE_DIR/links"
+
+# Copy all files from links/, resolving symlinks
+for item in links/.*; do
+    # Skip . and ..
+    [[ "$item" == "links/." || "$item" == "links/.." ]] && continue
+
+    filename=$(basename "$item")
+
+    if [ -L "$item" ]; then
+        # It's a symlink - copy the target
+        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links/$filename"
+    elif [ -d "$item" ]; then
+        # It's a directory - copy recursively, resolving symlinks
+        cp -rL "$item" "$PACKAGE_DIR/links/$filename"
+    elif [ -f "$item" ]; then
+        # It's a regular file
+        cp "$item" "$PACKAGE_DIR/links/$filename"
+    fi
+done
+
+# Copy files from links/ that don't start with .
+for item in links/*; do
+    [ -e "$item" ] || continue
+    filename=$(basename "$item")
+
+    if [ -L "$item" ]; then
+        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links/$filename"
+    elif [ -d "$item" ]; then
+        cp -rL "$item" "$PACKAGE_DIR/links/$filename"
+    elif [ -f "$item" ]; then
+        cp "$item" "$PACKAGE_DIR/links/$filename"
+    fi
+done
+
+# Resolve links-in-depth/ symlinks
+echo "   Resolving links-in-depth/ symlinks..."
+mkdir -p "$PACKAGE_DIR/links-in-depth"
+
+for item in links-in-depth/.*; do
+    [[ "$item" == "links-in-depth/." || "$item" == "links-in-depth/.." ]] && continue
+
+    filename=$(basename "$item")
+
+    if [ -L "$item" ]; then
+        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links-in-depth/$filename"
+    elif [ -d "$item" ]; then
+        cp -rL "$item" "$PACKAGE_DIR/links-in-depth/$filename"
+    elif [ -f "$item" ]; then
+        cp "$item" "$PACKAGE_DIR/links-in-depth/$filename"
+    fi
+done
+
+# Create tarball
+echo "   Creating tarball..."
+tar -czf "$OUTPUT" -C "$TEMP_DIR" dotfiles
+
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+# Get size
+SIZE=$(du -h "$OUTPUT" | cut -f1)
+echo "✅ Done! Package created: $OUTPUT ($SIZE)"
+echo ""
+echo "To deploy on a remote server:"
+echo "  scp $OUTPUT user@server:/tmp/"
+echo "  ssh user@server 'cd /tmp && tar -xzf dotfiles.tar.gz && cd dotfiles && ./install.sh'"

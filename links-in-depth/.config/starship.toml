@@ -1,0 +1,103 @@
+# Starship configuration
+# Prompt format: ~/path/to/dir branch status ▶
+
+# Don't print a new line at the start of the prompt
+add_newline = false
+
+# Format: [user@host:]directory git_branch git_commit git_status character (all on one line)
+format = """
+$username\
+$hostname\
+$directory\
+$git_branch\
+$git_commit\
+$git_status\
+${custom.git_modified}\
+${custom.git_clean}\
+${custom.git_ahead_behind}\
+$character"""
+
+[character]
+success_symbol = "▶"
+error_symbol = "[▶](bold red)"
+
+[username]
+style_user = "bold red"
+style_root = "bold red"
+format = "[$user]($style)"
+disabled = false
+show_always = false
+
+[hostname]
+ssh_only = true
+format = "[@$hostname]($style): "
+style = "bold red"
+disabled = false
+
+[directory]
+format = "[$path]($style) "
+style = "blue"
+truncation_length = 100
+truncate_to_repo = false
+
+[git_branch]
+format = "[$branch]($style) "
+symbol = ""
+style = "yellow"
+
+[git_commit]
+# Show commit hash in detached HEAD mode (replaces showing "HEAD")
+commit_hash_length = 7
+format = '[\($hash$tag\)]($style) '
+style = "yellow"
+only_detached = true
+tag_disabled = false
+tag_symbol = " "
+
+[git_status]
+format = '([$conflicted$deleted$renamed$staged$untracked]($style))'
+style = ""
+conflicted = "[§](yellow) "
+untracked = "[✗](red) "
+stashed = ""
+staged = "[✚](green) "
+renamed = "[▴](blue) "
+deleted = "[✖](red) "
+disabled = false
+
+# Disable modules we don't need for a minimal prompt
+[package]
+disabled = true
+
+[nodejs]
+disabled = true
+
+[python]
+disabled = true
+
+[rust]
+disabled = true
+
+[docker_context]
+disabled = true
+
+# Custom module to show green checkmark when git repo is clean
+[custom.git_clean]
+command = "~/.bin/git-clean-check"
+when = "git rev-parse --git-dir 2>/dev/null"
+format = "([$output](green) )"
+disabled = false
+
+# Custom module to show yellow flag for modified files in index
+[custom.git_modified]
+command = "~/.bin/git-modified-check"
+when = "git rev-parse --git-dir 2>/dev/null"
+format = "([$output](yellow) )"
+disabled = false
+
+# Custom module to show ahead/behind status at the end
+[custom.git_ahead_behind]
+command = "~/.bin/git-ahead-behind-check"
+when = "git rev-parse --git-dir 2>/dev/null"
+format = "([$output](blue) )"
+disabled = false
