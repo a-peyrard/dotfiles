@@ -64,7 +64,7 @@ fi
 
 [[ $verbose ]] && echo "==> link all files from $src to $dest (options: force=$force, inside=$inside)"
 
-option="-depth 1"
+option="-maxdepth 1"
 if [[ $inside -eq 1 ]]; then
 	option="-type f"
 fi

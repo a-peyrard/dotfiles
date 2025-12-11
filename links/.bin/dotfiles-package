@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package dotfiles by resolving symlinks into a portable tarball
+# Package a working snapshot of dotfiles for quick deployment
 # Usage: dotfiles-package [output-path]
 # Default output: /tmp/dotfiles.tar.gz
 
@@ -7,92 +7,362 @@ set -e
 
 OUTPUT="${1:-/tmp/dotfiles.tar.gz}"
 TEMP_DIR=$(mktemp -d)
-PACKAGE_DIR="$TEMP_DIR/dotfiles"
+PACKAGE_DIR="$TEMP_DIR/dotfiles-snapshot"
 
-echo "📦 Packaging dotfiles..."
+echo "📦 Creating dotfiles snapshot..."
 echo "   Output: $OUTPUT"
 
-# Create package directory structure
+# Create package directory
 mkdir -p "$PACKAGE_DIR"
 
-# Copy bootstrap scripts and utilities (without symlinks)
-echo "   Copying bootstrap scripts..."
-cp -r bootstrap "$PACKAGE_DIR/"
-cp -r util "$PACKAGE_DIR/"
-cp install.sh "$PACKAGE_DIR/"
-
-# Copy .claude directory if it exists
-if [ -d .claude ]; then
-    echo "   Copying documentation..."
-    cp -r .claude "$PACKAGE_DIR/"
-fi
-
-# Create links directory and resolve all symlinks
-echo "   Resolving links/ symlinks..."
-mkdir -p "$PACKAGE_DIR/links"
-
-# Copy all files from links/, resolving symlinks
+echo "   Copying config files from links/..."
+# Copy all files from links/ directly to package root (resolving symlinks)
 for item in links/.*; do
-    # Skip . and ..
     [[ "$item" == "links/." || "$item" == "links/.." ]] && continue
-
     filename=$(basename "$item")
 
     if [ -L "$item" ]; then
-        # It's a symlink - copy the target
-        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links/$filename"
+        cp -rL "$(readlink "$item")" "$PACKAGE_DIR/$filename"
     elif [ -d "$item" ]; then
-        # It's a directory - copy recursively, resolving symlinks
-        cp -rL "$item" "$PACKAGE_DIR/links/$filename"
+        cp -rL "$item" "$PACKAGE_DIR/$filename"
     elif [ -f "$item" ]; then
-        # It's a regular file
-        cp "$item" "$PACKAGE_DIR/links/$filename"
+        cp "$item" "$PACKAGE_DIR/$filename"
     fi
 done
 
-# Copy files from links/ that don't start with .
+# Copy non-hidden files from links/
 for item in links/*; do
     [ -e "$item" ] || continue
     filename=$(basename "$item")
 
     if [ -L "$item" ]; then
-        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links/$filename"
+        cp -rL "$(readlink "$item")" "$PACKAGE_DIR/$filename"
     elif [ -d "$item" ]; then
-        cp -rL "$item" "$PACKAGE_DIR/links/$filename"
+        cp -rL "$item" "$PACKAGE_DIR/$filename"
     elif [ -f "$item" ]; then
-        cp "$item" "$PACKAGE_DIR/links/$filename"
+        cp "$item" "$PACKAGE_DIR/$filename"
     fi
 done
 
-# Resolve links-in-depth/ symlinks
-echo "   Resolving links-in-depth/ symlinks..."
-mkdir -p "$PACKAGE_DIR/links-in-depth"
+echo "   Copying .config from links-in-depth/..."
+# Copy .config directory
+if [ -d links-in-depth/.config ]; then
+    mkdir -p "$PACKAGE_DIR/.config"
+    cp -rL links-in-depth/.config/* "$PACKAGE_DIR/.config/"
+fi
 
-for item in links-in-depth/.*; do
-    [[ "$item" == "links-in-depth/." || "$item" == "links-in-depth/.." ]] && continue
+echo "   Copying util/ directory (package manager abstraction)..."
+# Copy util directory for package manager abstraction
+if [ -d util ]; then
+    cp -rL util "$PACKAGE_DIR/util"
+fi
 
-    filename=$(basename "$item")
+echo "   Copying runtime plugins..."
+# Copy tmux plugins if they exist (excluding test files and broken symlinks)
+if [ -d ~/.tmux/plugins ]; then
+    echo "   - Tmux plugins"
+    mkdir -p "$PACKAGE_DIR/.tmux/plugins"
+    # Use rsync to handle broken symlinks gracefully
+    rsync -rL --exclude='tests/' --exclude='test/' --exclude='run_tests' \
+        --exclude='.git/' --exclude='.github/' \
+        ~/.tmux/plugins/ "$PACKAGE_DIR/.tmux/plugins/" 2>/dev/null || true
+fi
 
-    if [ -L "$item" ]; then
-        cp -r "$(readlink "$item")" "$PACKAGE_DIR/links-in-depth/$filename"
-    elif [ -d "$item" ]; then
-        cp -rL "$item" "$PACKAGE_DIR/links-in-depth/$filename"
-    elif [ -f "$item" ]; then
-        cp "$item" "$PACKAGE_DIR/links-in-depth/$filename"
+# Copy zsh plugins if they exist (excluding test files and broken symlinks)
+if [ -d ~/.zsh/plugins ]; then
+    echo "   - Zsh plugins"
+    mkdir -p "$PACKAGE_DIR/.zsh/plugins"
+    # Use rsync to handle broken symlinks gracefully
+    rsync -rL --exclude='tests/' --exclude='test/' --exclude='run_tests' \
+        --exclude='.git/' --exclude='.github/' \
+        ~/.zsh/plugins/ "$PACKAGE_DIR/.zsh/plugins/" 2>/dev/null || true
+fi
+
+echo "   Creating install-packages.sh script..."
+# Create a minimal install script that uses the package manager abstraction
+cat > "$PACKAGE_DIR/install-packages.sh" << 'INSTALLER_EOF'
+#!/usr/bin/env bash
+# Install packages for dotfiles
+# This script uses the package manager abstraction from util/
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Parse arguments
+DRY_RUN=0
+if [ "$1" = "--dry-run" ]; then
+    DRY_RUN=1
+    echo "🔍 DRY RUN MODE - No packages will be installed"
+    echo ""
+fi
+
+# Source common utilities and OS detection
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/util/common.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/util/detect_os.sh"
+
+echo "🔍 Detected: $OS_TYPE"
+if [ -n "$DISTRO" ]; then
+    echo "   Distribution: $DISTRO"
+fi
+echo ""
+echo "📦 Installing essential packages..."
+echo ""
+
+# Package list (matches bootstrap/boot.d/common/10_packages.sh)
+# Core shell and editor
+pkg_install "git" ${DRY_RUN}
+pkg_install "tmux" ${DRY_RUN}
+pkg_install "zsh" ${DRY_RUN}
+pkg_install "vim" ${DRY_RUN}
+
+# Shell utilities
+pkg_install "tree" ${DRY_RUN}
+pkg_install "autojump" ${DRY_RUN}
+pkg_install "watch" ${DRY_RUN}
+pkg_install "jq" ${DRY_RUN}
+pkg_install "fzf" ${DRY_RUN}
+pkg_install "rsync" ${DRY_RUN}
+pkg_install "htop" ${DRY_RUN}
+
+# Git tools
+pkg_install "delta" ${DRY_RUN}
+pkg_install "git-lfs" ${DRY_RUN}
+
+# Terminal utilities
+pkg_install "glow" ${DRY_RUN}
+pkg_install "highlight" ${DRY_RUN}
+
+# Shell plugins
+pkg_install "zsh-syntax-highlighting" ${DRY_RUN}
+pkg_install "starship" ${DRY_RUN}
+
+# Other utilities
+pkg_install "ack" ${DRY_RUN}
+
+echo ""
+if [ $DRY_RUN -eq 1 ]; then
+    echo "✅ Dry run complete! Run without --dry-run to install packages."
+else
+    echo "✅ Package installation complete!"
+fi
+echo ""
+echo "Note: Some packages (git-delta, glow, starship) may not be in default repos."
+echo "You can install them manually if needed:"
+echo "  - starship: curl -sS https://starship.rs/install.sh | sh"
+echo "  - git-delta: Download from https://github.com/dandavison/delta/releases"
+echo "  - glow: Download from https://github.com/charmbracelet/glow/releases"
+INSTALLER_EOF
+
+chmod +x "$PACKAGE_DIR/install-packages.sh"
+
+echo "   Creating check-conflicts.sh script..."
+# Create a conflict checker script
+cat > "$PACKAGE_DIR/check-conflicts.sh" << 'CHECKER_EOF'
+#!/usr/bin/env bash
+# Check what files would be overwritten when extracting the snapshot
+
+TARBALL="${1:-/tmp/dotfiles.tar.gz}"
+
+if [ ! -f "$TARBALL" ]; then
+    echo "❌ Tarball not found: $TARBALL"
+    echo "Usage: $0 [path-to-tarball]"
+    exit 1
+fi
+
+echo "📋 Checking conflicts for: $TARBALL"
+echo ""
+
+# List files in tarball (stripping first component)
+files=$(tar -tzf "$TARBALL" | sed 's|^[^/]*/||' | grep -v '^$')
+
+will_overwrite=()
+will_create=()
+
+for file in $files; do
+    if [ -e "$HOME/$file" ]; then
+        will_overwrite+=("$file")
+    else
+        will_create+=("$file")
     fi
 done
 
-# Create tarball
+if [ ${#will_overwrite[@]} -gt 0 ]; then
+    echo "⚠️  Files that WILL BE OVERWRITTEN (${#will_overwrite[@]}):"
+    printf '   %s\n' "${will_overwrite[@]}" | head -20
+    if [ ${#will_overwrite[@]} -gt 20 ]; then
+        echo "   ... and $((${#will_overwrite[@]} - 20)) more files"
+    fi
+    echo ""
+fi
+
+if [ ${#will_create[@]} -gt 0 ]; then
+    echo "✨ New files that WILL BE CREATED (${#will_create[@]}):"
+    printf '   %s\n' "${will_create[@]}" | head -10
+    if [ ${#will_create[@]} -gt 10 ]; then
+        echo "   ... and $((${#will_create[@]} - 10)) more files"
+    fi
+    echo ""
+fi
+
+echo "Summary:"
+echo "  - ${#will_overwrite[@]} files will be overwritten"
+echo "  - ${#will_create[@]} new files will be created"
+echo ""
+
+if [ ${#will_overwrite[@]} -gt 0 ]; then
+    echo "💡 To backup existing files before extraction:"
+    echo "   mkdir -p ~/dotfiles-backup-\$(date +%Y%m%d)"
+    echo "   tar -czf ~/dotfiles-backup-\$(date +%Y%m%d)/backup.tar.gz ${will_overwrite[@]/#/~/}"
+fi
+CHECKER_EOF
+
+chmod +x "$PACKAGE_DIR/check-conflicts.sh"
+
+echo "   Creating README..."
+# Create README
+cat > "$PACKAGE_DIR/README.md" << 'README_EOF'
+# Dotfiles Snapshot
+
+This is a snapshot of your dotfiles environment, ready for deployment.
+
+## Installation Methods
+
+### Method 1: Direct Installation (Recommended for fresh systems)
+
+Install dotfiles directly without modifications.
+
+```bash
+# 1. Check what would be overwritten (optional)
+cd /tmp
+tar -xzf dotfiles.tar.gz dotfiles-snapshot/check-conflicts.sh --strip-components=1
+bash check-conflicts.sh dotfiles.tar.gz
+
+# 2. Extract directly to home
+cd $HOME
+tar -xzf /tmp/dotfiles.tar.gz --strip-components=1
+
+# 3. Install packages
+bash install-packages.sh
+rm install-packages.sh README.md check-conflicts.sh
+rm -rf util/
+
+# 4. Reload shell
+exec zsh -l
+```
+
+### Method 2: Extract, Edit, Then Install (For existing configurations)
+
+If you need to customize files before installation (e.g., add custom lines to .zshrc):
+
+```bash
+# 1. Extract to temp directory
+cd /tmp
+tar -xzf dotfiles.tar.gz --strip-components=1
+
+# 2. Edit any files as needed
+vim .zshrc
+vim .gitconfig
+# ... edit other files
+
+# 3. Preview what will be installed (optional)
+rsync -avn --exclude='install-packages.sh' --exclude='README.md' \
+  --exclude='check-conflicts.sh' --exclude='util/' ./ ~/
+
+# 4. Install everything (merges with existing directories like .config)
+rsync -av --exclude='install-packages.sh' --exclude='README.md' \
+  --exclude='check-conflicts.sh' --exclude='util/' ./ ~/
+
+# 5. Install packages
+bash install-packages.sh
+
+# 6. Clean up temp files
+cd ~
+rm -rf /tmp/install-packages.sh /tmp/util /tmp/README.md /tmp/check-conflicts.sh
+
+# 7. Reload shell
+exec zsh -l
+```
+
+**Note:** The rsync method safely merges directories. For example, if you have `~/.config/htop/`, it will be preserved and only new files like `.config/starship.toml` will be added.
+
+## Quick One-Liners
+
+**Direct install:**
+```bash
+cd $HOME && tar -xzf /tmp/dotfiles.tar.gz --strip-components=1 && bash install-packages.sh && rm install-packages.sh README.md check-conflicts.sh && rm -rf util && exec zsh -l
+```
+
+**Extract and edit:**
+```bash
+cd /tmp && tar -xzf dotfiles.tar.gz --strip-components=1
+# (edit files, then run rsync command from Method 2)
+```
+
+## What's Included
+
+- All config files (.zshrc, .gitconfig, .vimrc, .tmux.conf, etc.)
+- .bin/ directory with custom scripts
+- .env.d/ environment configuration
+- .config/starship/ prompt configuration
+- .tmux/plugins/ - Tmux Plugin Manager + plugins
+- .zsh/plugins/ - FZF-tab plugin
+- .vim/pack/ - Vim plugins (gruvbox, typescript-vim)
+- util/ - Package manager abstraction with OS detection
+- install-packages.sh - Package installer (uses util/ package manager abstraction)
+- check-conflicts.sh - Check what files would be overwritten
+
+## Architecture
+
+The package installer uses a cross-platform package manager abstraction:
+- `util/detect_os.sh` - Auto-detects OS/distro and sources the appropriate package manager
+- `util/package_managers/brew.sh` - Homebrew implementation (macOS)
+- `util/package_managers/dnf.sh` - DNF/YUM implementation (RHEL/CentOS/Fedora)
+- `util/package_managers/apt.sh` - APT implementation (Debian/Ubuntu)
+
+All package name mappings are centralized in these files, so the snapshot always uses the same logic as the main dotfiles repository.
+
+## Manual Steps (if needed)
+
+If install-packages.sh fails for some packages:
+
+### Starship
+```bash
+curl -sS https://starship.rs/install.sh | sh
+```
+
+### Git Delta
+```bash
+# Download from https://github.com/dandavison/delta/releases
+# or install via cargo:
+cargo install git-delta
+```
+
+### Glow
+```bash
+# Download from https://github.com/charmbracelet/glow/releases
+```
+README_EOF
+
+# Create tarball (without extended attributes for Linux portability)
 echo "   Creating tarball..."
-tar -czf "$OUTPUT" -C "$TEMP_DIR" dotfiles
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$OUTPUT" -C "$TEMP_DIR" dotfiles-snapshot
 
 # Cleanup
 rm -rf "$TEMP_DIR"
 
 # Get size
 SIZE=$(du -h "$OUTPUT" | cut -f1)
-echo "✅ Done! Package created: $OUTPUT ($SIZE)"
+echo "✅ Done! Snapshot created: $OUTPUT ($SIZE)"
 echo ""
-echo "To deploy on a remote server:"
+echo "📖 See README.md in the tarball for installation methods:"
+echo "   - Method 1: Direct installation (for fresh systems)"
+echo "   - Method 2: Extract, edit, then install (for existing configs)"
+echo ""
+echo "Quick transfer to remote server:"
 echo "  scp $OUTPUT user@server:/tmp/"
-echo "  ssh user@server 'cd /tmp && tar -xzf dotfiles.tar.gz && cd dotfiles && ./install.sh'"
+echo ""
+echo "Then on the server, extract and read the README:"
+echo "  cd /tmp && tar -xzf dotfiles.tar.gz --strip-components=1 && cat README.md"

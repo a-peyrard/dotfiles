@@ -2,6 +2,30 @@
 # Modern setup using Starship prompt and modular env.d configuration
 
 # =============================================================================
+# OS Detection (must be first)
+# =============================================================================
+
+# Detect OS type for conditional configuration
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  export OS_TYPE="macos"
+  export DISTRO=""
+else
+  export OS_TYPE="linux"
+  # Detect Linux distro
+  if [ -f /etc/os-release ]; then
+    source /etc/os-release
+    case "$ID" in
+      centos|rhel|fedora)  export DISTRO="centos" ;;
+      ubuntu|debian)       export DISTRO="ubuntu" ;;
+      arch|manjaro)        export DISTRO="arch" ;;
+      *)                   export DISTRO="" ;;
+    esac
+  else
+    export DISTRO=""
+  fi
+fi
+
+# =============================================================================
 # Shell Options
 # =============================================================================
 
@@ -27,8 +51,10 @@ setopt HIST_SAVE_NO_DUPS         # Don't write duplicate entries in the history 
 # Set PATH
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Set PATH, MANPATH, etc., for Homebrew
-eval "$(/opt/homebrew/bin/brew shellenv)"
+# Set PATH, MANPATH, etc., for Homebrew (macOS only)
+if [ "$OS_TYPE" = "macos" ]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
 
 # Language environment
 export LANG=en_US.UTF-8
@@ -36,22 +62,51 @@ export LANG=en_US.UTF-8
 # Preferred editor
 export EDITOR='vim'
 
-# Compilation flags
-export ARCHFLAGS="-arch arm64"
+# Compilation flags (macOS only)
+if [ "$OS_TYPE" = "macos" ]; then
+  export ARCHFLAGS="-arch arm64"
+fi
 
 # =============================================================================
 # Load Modular Environment Configuration
 # =============================================================================
 
 # Source all env files from env.d in numeric order (like boot.d)
-# Files are prefixed with numbers to control load order:
-#   00-09: Critical initialization (completions, shell options)
-#   10-89: Main environment configuration (tools, languages, paths)
-#   90-98: Late-loading plugins (fzf-tab, starship)
-#   99:    Must load last (syntax highlighting)
+# Files are organized in subdirectories with override logic:
+#   common/           - Files loaded on all platforms
+#   $OS_TYPE/         - OS-specific files (macos/ or linux/)
+#   ${OS_TYPE}_${DISTRO}/ - Distro-specific files (e.g., linux_centos/)
 if [ -d ~/.env.d ]; then
-  for env_file in $(find ~/.env.d/ -name "*.env" | sort); do
-    source "$env_file"
+  # Collect env files with override logic
+  typeset -A env_files  # Associative array: filename -> full_path
+
+  # First, collect from common/
+  if [ -d ~/.env.d/common ]; then
+    for env_file in ~/.env.d/common/*.env(N); do
+      local filename=$(basename "$env_file")
+      env_files[$filename]="$env_file"
+    done
+  fi
+
+  # Then, collect from OS-specific directory (e.g., macos/ or linux/)
+  if [ -d ~/.env.d/$OS_TYPE ]; then
+    for env_file in ~/.env.d/$OS_TYPE/*.env(N); do
+      local filename=$(basename "$env_file")
+      env_files[$filename]="$env_file"  # Override if exists
+    done
+  fi
+
+  # Finally, collect from distro-specific directory (e.g., linux_centos/)
+  if [ -n "$DISTRO" ] && [ -d ~/.env.d/${OS_TYPE}_${DISTRO} ]; then
+    for env_file in ~/.env.d/${OS_TYPE}_${DISTRO}/*.env(N); do
+      local filename=$(basename "$env_file")
+      env_files[$filename]="$env_file"  # Override if exists
+    done
+  fi
+
+  # Source files in sorted order
+  for filename in ${(ko)env_files}; do
+    source "${env_files[$filename]}"
   done
 fi
 
@@ -81,16 +136,3 @@ alias reload="exec ${SHELL} -l"
 
 # Start ssh-agent
 eval "$(ssh-agent)" &>/dev/null
-
-# =============================================================================
-# SDKMan (must be at end)
-# =============================================================================
-
-export SDKMAN_DIR="$HOME/.sdkman"
-[[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
-
-# =============================================================================
-# UV Completion
-# =============================================================================
-
-eval "$(uv generate-shell-completion zsh)"
