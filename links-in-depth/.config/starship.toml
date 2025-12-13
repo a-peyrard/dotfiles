@@ -15,6 +15,11 @@ $git_status\
 ${custom.git_modified}\
 ${custom.git_clean}\
 ${custom.git_ahead_behind}\
+$hg_branch\
+$hg_state\
+${custom.sl_status}\
+${custom.sl_clean}\
+${custom.sl_draft}\
 $character"""
 
 [character]
@@ -25,13 +30,13 @@ error_symbol = "[▶](bold red)"
 style_user = "bold red"
 style_root = "bold red"
 format = "[$user]($style)"
-disabled = false
+disabled = true
 show_always = false
 
 [hostname]
 ssh_only = true
-format = "[@$hostname]($style): "
-style = "bold red"
+format = "[\\[@$hostname\\]]($style): "
+style = "yellow"
 disabled = false
 
 [directory]
@@ -64,6 +69,17 @@ staged = "[✚](green) "
 renamed = "[▴](blue) "
 deleted = "[✖](red) "
 disabled = false
+
+# Mercurial/Sapling branch support (native)
+[hg_branch]
+format = "[$branch]($style) "
+symbol = ""
+style = "yellow"
+disabled = false
+
+# Mercurial/Sapling state (rebase, merge, etc.)
+[hg_state]
+disabled = true
 
 # Disable modules we don't need for a minimal prompt
 [package]
@@ -99,5 +115,27 @@ disabled = false
 [custom.git_ahead_behind]
 command = "~/.bin/git-ahead-behind-check"
 when = "git rev-parse --git-dir 2>/dev/null"
+format = "([$output](blue) )"
+disabled = false
+
+# Sapling (sl) custom modules
+# Custom module to show Sapling status (additions, deletions, modifications, etc.)
+[custom.sl_status]
+command = "~/.bin/sl-status-check"
+when = "sl root 2>/dev/null"
+format = "([$output](yellow) )"
+disabled = false
+
+# Custom module to show green checkmark when Sapling repo is clean
+[custom.sl_clean]
+command = "~/.bin/sl-clean-check"
+when = "sl root 2>/dev/null"
+format = "([$output](green) )"
+disabled = false
+
+# Custom module to show count of draft commits (not pushed upstream)
+[custom.sl_draft]
+command = "~/.bin/sl-draft-check"
+when = "sl root 2>/dev/null"
 format = "([$output](blue) )"
 disabled = false

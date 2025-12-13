@@ -1,0 +1,20 @@
+#!/usr/bin/env zsh
+# Show Sapling status indicators (optimized for monorepos)
+# Fast version - exits early if repo check fails
+local sl_output=$(sl status 2>/dev/null) || exit 0
+
+local output=""
+local modified=$(echo "$sl_output" | grep -c '^M ' 2>/dev/null)
+local added=$(echo "$sl_output" | grep -c '^A ' 2>/dev/null)
+local removed=$(echo "$sl_output" | grep -c '^R ' 2>/dev/null)
+local untracked=$(echo "$sl_output" | grep -c '^? ' 2>/dev/null)
+
+# Build output string with symbols and counts
+[[ ${modified:-0} -gt 0 ]] && output+="⚑${modified} "
+[[ ${added:-0} -gt 0 ]] && output+="✚${added} "
+[[ ${removed:-0} -gt 0 ]] && output+="✖${removed} "
+[[ ${untracked:-0} -gt 0 ]] && output+="✗${untracked} "
+
+# Trim trailing space
+echo "${output% }"
+
