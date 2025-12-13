@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# Show count of draft commits (commits not pushed upstream)
+# Optimized for monorepos - uses fast local query
+local draft_count=$(sl log -r 'draft() & ancestors(.)' -T x 2>/dev/null | wc -l | tr -d ' ')
+
+if [[ -n "$draft_count" && "$draft_count" -gt 0 ]]; then
+  echo "⇡${draft_count}"
+fi

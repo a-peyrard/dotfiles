@@ -1,0 +1,5 @@
+#!/usr/bin/env zsh
+# Show current Sapling bookmark or commit hash
+# Fast version - use 'sl whereami' which is faster than multiple commands
+sl whereami 2>/dev/null | head -1
+

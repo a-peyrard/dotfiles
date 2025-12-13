@@ -1,0 +1,7 @@
+#!/usr/bin/env zsh
+# Check if Sapling repo is clean and output checkmark
+# Fast check: only look at working copy status
+if [ -z "$(sl status 2>/dev/null)" ]; then
+  echo "✔"
+fi
+
