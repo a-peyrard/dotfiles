@@ -299,7 +299,92 @@ Jump to any visible location with 2-3 keystrokes!
 
 ---
 
-## 🐛 Diagnostics (Trouble)
+## 🐛 Debugging (DAP - Debug Adapter Protocol)
+
+**Interactive debugger for Python and Rust with breakpoints, stepping, and variable inspection**
+
+### Starting & Controlling Debugger
+| Keybinding | Action |
+|------------|--------|
+| `F5` | Start debugging / Continue |
+| `F10` | Step over (execute current line) |
+| `F11` | Step into (enter function) |
+| `F12` | Step out (exit function) |
+| `<leader>dt` | Terminate debugging session |
+| `<leader>dl` | Run last debug configuration |
+
+### Breakpoints
+| Keybinding | Action |
+|------------|--------|
+| `<leader>db` | Toggle breakpoint at current line |
+| `<leader>dB` | Set conditional breakpoint (with expression) |
+
+### Inspecting Variables
+| Keybinding | Action |
+|------------|--------|
+| `<leader>dh` | Hover to see variable value (during debug) |
+| `<leader>dp` | Preview variable value |
+| `<leader>dr` | Open REPL (evaluate expressions) |
+| `<leader>du` | Toggle debug UI (scopes/watches/stacks/console) |
+
+### Breakpoint & Debugging Icons
+**In the sign column (left margin):**
+- ● (red) = Breakpoint set
+- ◆ (red) = Conditional breakpoint
+- → (yellow) = Execution stopped here
+- ○ (gray) = Breakpoint rejected/disabled
+
+**In the code (virtual text):**
+- Variable values appear inline when debugging
+- Highlighted when values change
+
+### Debug UI Layout
+**When you press `F5` or `<leader>du`, the UI auto-opens:**
+- **Left sidebar:** Scopes (local/global vars), Breakpoints, Call stack, Watches
+- **Bottom panel:** REPL (interactive console), Console output
+
+**Workflow:**
+1. Open Python or Rust file
+2. Press `<leader>db` to set breakpoint(s)
+3. Press `F5` to start debugging
+4. Debug UI opens automatically
+5. Use `F10` to step through code
+6. Hover over variables or check left sidebar for values
+7. Press `F5` to continue to next breakpoint
+8. Press `<leader>dt` to stop debugging
+
+### Debug Configurations
+
+**Python:**
+- Automatically detects virtual environment (`$VIRTUAL_ENV`)
+- Falls back to system Python if no venv active
+- "Launch file" - runs current file
+- "Launch file with arguments" - prompts for CLI args
+
+**Rust:**
+- Debugs compiled binaries from `target/debug/`
+- Prompts for executable path when starting
+- Make sure to build with debug symbols: `cargo build`
+
+### Debug Commands
+```vim
+:DapContinue           # Start/continue debugging (same as F5)
+:DapStepOver           # Step over (F10)
+:DapStepInto           # Step into (F11)
+:DapStepOut            # Step out (F12)
+:DapToggleBreakpoint   # Toggle breakpoint (<leader>db)
+:DapTerminate          # Stop debugging (<leader>dt)
+```
+
+**Installing Debug Adapters:**
+The debug adapters (debugpy for Python, codelldb for Rust) are automatically installed via Mason on first launch. If they're missing:
+```vim
+:Mason                 # Open Mason, search for debugpy and codelldb
+```
+
+---
+
+## 🚨 Diagnostics (Trouble)
 
 | Keybinding | Action |
 |------------|--------|
@@ -436,12 +521,25 @@ Then:
 3. `/search` - Search for text
 4. `gg` / `G` - Jump to top/bottom
 
-### Debugging Errors
+### Debugging Code Errors (LSP Diagnostics)
 1. `:LspInfo` - Check LSP status
 2. `<leader>xx` - Open diagnostics
-3. `]c` / `[c` - Navigate errors
+3. `]d` / `[d` - Navigate errors
 4. `<leader>ca` - View code actions
 5. `:checkhealth` - Check Neovim health
+
+### Debugging with Breakpoints (DAP)
+1. Open Python or Rust file: `nvim main.py`
+2. Set breakpoint: `<leader>db` on the line you want to pause at
+3. Start debugging: `F5` (prompts for debug config)
+4. Debug UI opens automatically with variables/call stack
+5. Step through code: `F10` (over), `F11` (into), `F12` (out)
+6. Hover over variables: `<leader>dh` to see values
+7. Continue to next breakpoint: `F5`
+8. Stop debugging: `<leader>dt`
+
+**Python debugging tip:** Activate your venv first for proper imports!
+**Rust debugging tip:** Build with debug symbols: `cargo build` (not `--release`)
 
 ---
 
@@ -497,6 +595,16 @@ Then:
 - `yy` - Copy line (to system clipboard!)
 - `{number}j/k` - Jump using relative line numbers
 - `:noh` - Clear search highlights
+
+**Debugging:**
+- `<leader>db` - Toggle breakpoint
+- `F5` - Start/Continue debugging
+- `F10` - Step over
+- `F11` - Step into
+- `F12` - Step out
+- `<leader>dh` - Hover variable (debug)
+- `<leader>du` - Toggle debug UI
+- `<leader>dt` - Terminate debug session
 
 **Enhanced Features:**
 - System clipboard auto-enabled (copy/paste anywhere!)

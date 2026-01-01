@@ -37,7 +37,7 @@ return {
       local capabilities = cmp_nvim_lsp.default_capabilities()
 
       -- Common on_attach function for all LSP servers
-      local on_attach = function(_, bufnr)
+      local on_attach = function(client, bufnr)
         local opts = { buffer = bufnr }
 
         -- LSP keybindings
@@ -56,46 +56,53 @@ return {
         vim.keymap.set('n', 'gl', vim.diagnostic.open_float, opts)
       end
 
-      -- Setup mason-lspconfig with automatic handlers
-      require("mason-lspconfig").setup({
+      -- Setup mason-lspconfig
+      local mason_lspconfig = require("mason-lspconfig")
+
+      mason_lspconfig.setup({
         ensure_installed = {
           "rust_analyzer", -- Rust
           "pyright",       -- Python
           "lua_ls",        -- Lua
         },
-        -- Automatic setup for all servers with common config
-        handlers = {
-          -- Default handler - applies to all servers unless overridden
-          function(server_name)
-            lspconfig[server_name].setup({
-              capabilities = capabilities,
-              on_attach = on_attach,
-            })
-          end,
+        -- IMPORTANT: Disable automatic_enable (Neovim 0.11+)
+        -- We want to use lspconfig.setup() with our on_attach, not vim.lsp.enable()
+        automatic_enable = false,
+      })
 
-          -- Custom handler for lua_ls (needs special settings)
-          ["lua_ls"] = function()
-            lspconfig.lua_ls.setup({
-              capabilities = capabilities,
-              on_attach = on_attach,
-              settings = {
-                Lua = {
-                  diagnostics = {
-                    globals = { "vim" }, -- Recognize 'vim' as a global
-                  },
-                  workspace = {
-                    library = vim.api.nvim_get_runtime_file("", true),
-                    checkThirdParty = false,
-                  },
-                  telemetry = {
-                    enable = false,
-                  },
+      -- Manually setup each installed server with our on_attach callback
+      local installed_servers = mason_lspconfig.get_installed_servers()
+
+      for _, server_name in ipairs(installed_servers) do
+
+        if server_name == "lua_ls" then
+          -- Custom setup for lua_ls
+          lspconfig.lua_ls.setup({
+            capabilities = capabilities,
+            on_attach = on_attach,
+            settings = {
+              Lua = {
+                diagnostics = {
+                  globals = { "vim" },
+                },
+                workspace = {
+                  library = vim.api.nvim_get_runtime_file("", true),
+                  checkThirdParty = false,
+                },
+                telemetry = {
+                  enable = false,
                 },
               },
-            })
-          end,
-        },
-      })
+            },
+          })
+        else
+          -- Default setup for all other servers
+          lspconfig[server_name].setup({
+            capabilities = capabilities,
+            on_attach = on_attach,
+          })
+        end
+      end
 
       -- Restore original notify after all lspconfig setup is complete
       vim.notify = notify
