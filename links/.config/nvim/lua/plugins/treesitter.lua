@@ -1,21 +1,35 @@
 -- Treesitter configuration for syntax highlighting
--- NOTE: nvim-treesitter main branch has a new API that doesn't use .configs
--- Parsers are installed via :TSInstall command, highlighting is automatic
 return {
-  "nvim-treesitter/nvim-treesitter",
-  build = ":TSUpdate",
-  lazy = false,
-  priority = 100,
-  config = function()
-    -- No setup needed with new API
-    -- Parsers will be installed on demand or via :TSInstall rust python lua vim vimdoc toml json yaml markdown
+  -- Core treesitter
+  {
+    "nvim-treesitter/nvim-treesitter",
+    build = ":TSUpdate",
+    lazy = false,
+    priority = 100,
+    config = function()
+      -- Enable highlighting automatically for all filetypes
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "*",
+        callback = function()
+          pcall(vim.treesitter.start) -- Use pcall in case parser not installed
+        end,
+      })
+    end,
+  },
 
-    -- Enable highlighting automatically for all filetypes
-    vim.api.nvim_create_autocmd('FileType', {
-      pattern = '*',
-      callback = function()
-        pcall(vim.treesitter.start)  -- Use pcall in case parser not installed
-      end,
-    })
-  end,
+  -- Incremental selection plugin (like IntelliJ's expand selection)
+  {
+    "sustech-data/wildfire.nvim",
+    event = "VeryLazy",
+    dependencies = { "nvim-treesitter/nvim-treesitter" },
+    config = function()
+      require("wildfire").setup({
+        keymaps = {
+          init_selection = "gn",
+          node_incremental = "<CR>",
+          node_decremental = "<BS>",
+        },
+      })
+    end,
+  },
 }

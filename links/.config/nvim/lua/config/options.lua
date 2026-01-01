@@ -97,9 +97,15 @@ vim.opt.autoindent = true       -- Copy indent from current line when starting n
 -- Better diff mode
 vim.opt.diffopt:append("vertical")  -- Vertical diff splits
 
--- Show invisible characters (optional - uncomment if you want to see them)
--- vim.opt.list = true
--- vim.opt.listchars = { tab = "→ ", trail = "·", nbsp = "␣" }
+-- Show invisible characters (IntelliJ-style subtle display)
+vim.opt.list = true
+vim.opt.listchars = {
+  tab = "▸ ",      -- Tab character
+  space = "·",     -- Space character (middle dot)
+  trail = "•",     -- Trailing spaces (bullet)
+  nbsp = "+",      -- Non-breaking space
+  eol = "¬",       -- End of line
+}
 
 -- Configure diagnostic floating windows with borders (matches completion style)
 vim.diagnostic.config({
@@ -111,4 +117,14 @@ vim.diagnostic.config({
     focusable = true,    -- Allow entering the window with Ctrl+w w
   },
 })
+
+-- ============================================================================
+-- Keymaps
+-- ============================================================================
+
+-- Reload configuration with visual confirmation
+vim.keymap.set("n", "<leader>R", function()
+  vim.cmd("source $MYVIMRC")
+  vim.notify("Configuration reloaded!", vim.log.levels.INFO)
+end, { desc = "Reload Neovim config" })
 
