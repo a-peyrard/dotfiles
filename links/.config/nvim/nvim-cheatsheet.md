@@ -108,6 +108,25 @@ Examples:
 - Your undo history is saved even after closing files!
 - Close a file, reopen days later, `u` still works
 
+### Incremental Selection (Wildfire)
+**Expand/shrink selection intelligently based on syntax (like IntelliJ's Ctrl+W)**
+
+| Key | Action |
+|-----|--------|
+| `gn` | Start selection (select current word/node) |
+| `<CR>` (Enter) | **Expand** selection (word → line → block → function) |
+| `<BS>` (Backspace) | **Shrink** selection (reverse) |
+
+**Example workflow:**
+1. Put cursor on `device` inside `if device == "out" {`
+2. Press `gn` - selects `device`
+3. Press `<CR>` - expands to `device == "out"`
+4. Press `<CR>` - expands to entire `if` condition
+5. Press `<CR>` - expands to entire `if` block
+6. Press `<BS>` - shrinks back one level
+
+**Pro tip:** Much faster than manually selecting with `v` + motion!
+
 ### Search & Replace
 | Command | Action |
 |---------|--------|
@@ -276,6 +295,7 @@ Jump to any visible location with 2-3 keystrokes!
 | Keybinding | Action |
 |------------|--------|
 | `<leader>tt` | Run nearest test (test under cursor) |
+| `<leader>td` | **Debug nearest test** (opens DAP debugger) |
 | `<leader>tf` | Run all tests in current file |
 | `<leader>ts` | Toggle test summary (sidebar explorer) |
 | `<leader>to` | Show test output (floating window) |
