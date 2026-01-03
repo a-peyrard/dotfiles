@@ -338,6 +338,8 @@ Jump to any visible location with 2-3 keystrokes!
 |------------|--------|
 | `<leader>db` | Toggle breakpoint at current line |
 | `<leader>dB` | Set conditional breakpoint (with expression) |
+| `<leader>dL` | List all breakpoints (opens in location list) |
+| `<leader>dC` | Clear all breakpoints |
 
 ### Inspecting Variables
 | Keybinding | Action |
@@ -565,6 +567,12 @@ Then:
 7. Continue to next breakpoint: `F5`
 8. Stop debugging: `<leader>dt`
 
+**Breakpoint Management:**
+- Breakpoints **persist across sessions** automatically (saved per project)
+- `<leader>dL` - View all breakpoints in a list
+- `<leader>dC` - Clear all breakpoints at once
+- Conditional breakpoints: `<leader>dB` then enter expression (e.g., `x > 10`)
+
 **Python debugging tip:** Activate your venv first for proper imports!
 **Rust debugging tip:** Build with debug symbols: `cargo build` (not `--release`)
 **Go debugging tip:** Delve works out of the box, just press `F5` to start!
@@ -626,6 +634,9 @@ Then:
 
 **Debugging:**
 - `<leader>db` - Toggle breakpoint
+- `<leader>dB` - Conditional breakpoint
+- `<leader>dL` - List all breakpoints
+- `<leader>dC` - Clear all breakpoints
 - `F5` - Start/Continue debugging
 - `F10` - Step over
 - `F11` - Step into
@@ -638,6 +649,7 @@ Then:
 - System clipboard auto-enabled (copy/paste anywhere!)
 - Relative line numbers (see gutter for jump distances)
 - Persistent undo (survives file closes)
+- Persistent breakpoints (saved per project across sessions)
 - Smart case-sensitive search
 - Indent guides with scope highlighting
 

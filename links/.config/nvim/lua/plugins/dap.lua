@@ -13,6 +13,8 @@ return {
       "jay-babu/mason-nvim-dap.nvim",
       -- Go debugging integration (required by neotest-golang)
       "leoluz/nvim-dap-go",
+      -- Persist breakpoints across sessions
+      "ldelossa/nvim-dap-projects",
     },
     -- Load plugin when these keys are pressed AND map them
     keys = {
@@ -28,6 +30,8 @@ return {
       { "<leader>dt", function() require("dap").terminate() end, desc = "Debug: Terminate" },
       { "<leader>dh", function() require("dap.ui.widgets").hover() end, desc = "Debug: Hover Variables", mode = { "n", "v" } },
       { "<leader>dp", function() require("dap.ui.widgets").preview() end, desc = "Debug: Preview", mode = { "n", "v" } },
+      { "<leader>dL", function() require("dap").list_breakpoints() end, desc = "Debug: List Breakpoints" },
+      { "<leader>dC", function() require("dap").clear_breakpoints() end, desc = "Debug: Clear All Breakpoints" },
     },
     config = function()
       local dap = require("dap")
@@ -42,6 +46,9 @@ return {
 
       -- Setup nvim-dap-go (required by neotest-golang)
       require("dap-go").setup()
+
+      -- Setup nvim-dap-projects for breakpoint persistence
+      require("nvim-dap-projects").search_project_config()
 
       -- Explicit codelldb adapter configuration
       local mason_registry_ok, mason_registry = pcall(require, "mason-registry")
