@@ -156,9 +156,15 @@ Examples:
 | `gd` | Go to Definition | Jump to where symbol is defined |
 | `gr` | Go to References | Show all references |
 | `K` | Hover Documentation | Show type info / function docs |
+| `gK` | Signature Help | Show function signature & parameters (works anywhere in function call) |
 | `<leader>rn` | Rename | Rename symbol across project |
 | `<leader>ca` | Code Action | Show available fixes/actions |
 | `<leader>f` | Format | Format current buffer |
+
+**When to use K vs gK:**
+- `K` on a function/variable → shows full documentation
+- `gK` anywhere inside a function call → shows signature with parameter names & types
+- Example: In `myFunc(arg1, arg2)`, cursor on `arg1` → press `gK` to see what parameters `myFunc` expects
 
 ### Diagnostic Navigation & Viewing
 | Keybinding | Action |
@@ -169,7 +175,7 @@ Examples:
 
 ### Scrolling in Floating Windows
 **For long documentation or diagnostic messages:**
-1. Press `K` or `gl` to open floating window
+1. Press `K`, `gK`, or `gl` to open floating window
 2. Press `Ctrl+w w` to enter the floating window
 3. Scroll normally: `j/k`, `Ctrl+d/u`, `Ctrl+f/b`, `gg/G`
 4. Press `q` or `Esc` to close and return to code
@@ -526,9 +532,10 @@ Then:
 2. Wait for LSP to attach (check bottom right)
 3. `gd` - Jump to definition
 4. `K` - Read documentation
-5. `<leader>ca` - See code actions
-6. `<leader>f` - Format before saving
-7. `:w` - Save
+5. `gK` - See function signature (when inside function calls)
+6. `<leader>ca` - See code actions
+7. `<leader>f` - Format before saving
+8. `:w` - Save
 
 ### Git Workflow
 1. `<leader>hp` - Preview changes
@@ -621,8 +628,9 @@ Then:
 - `<leader>tt` - Run test under cursor
 - `s{char}{char}` - Leap navigation
 - `gd` - Go to definition
-- `gl` - Show error/diagnostic message
 - `K` - Show hover docs/type info
+- `gK` - Show function signature (works in params!)
+- `gl` - Show error/diagnostic message
 - `Ctrl+w w` - Enter floating window (to scroll long docs)
 - `<leader>ca` - Code actions (fixes!)
 - `<leader>f` - Format
