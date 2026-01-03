@@ -5,35 +5,46 @@ return {
     dependencies = {
       "nvim-neotest/nvim-nio",
       "nvim-lua/plenary.nvim",
-      "nvim-treesitter/nvim-treesitter",
       "antoinemadec/FixCursorHold.nvim",
-      -- Rust test adapter
+      {
+        "nvim-treesitter/nvim-treesitter",
+        branch = "main",  -- REQUIRED for neotest-golang v2+
+      },
+      {
+        "fredrikaverpil/neotest-golang",
+        version = "*",  -- Track releases
+        build = function()
+          -- Optional but recommended: install gotestsum for better stability
+          vim.system({"go", "install", "gotest.tools/gotestsum@latest"}):wait()
+        end,
+      },
       "rouge8/neotest-rust",
     },
     keys = {
-      { "<leader>tt", "<cmd>lua require('neotest').run.run()<cr>", desc = "Run nearest test" },
-      { "<leader>td", "<cmd>lua require('neotest').run.run({ strategy = 'dap' })<cr>", desc = "Debug nearest test" },
-      { "<leader>tf", "<cmd>lua require('neotest').run.run(vim.fn.expand('%'))<cr>", desc = "Run all tests in file" },
-      { "<leader>ts", "<cmd>lua require('neotest').summary.toggle()<cr>", desc = "Toggle test summary" },
-      { "<leader>to", "<cmd>lua require('neotest').output.open({ enter = true })<cr>", desc = "Show test output" },
-      { "<leader>tO", "<cmd>lua require('neotest').output_panel.toggle()<cr>", desc = "Toggle output panel" },
-      { "<leader>tl", "<cmd>lua require('neotest').run.run_last()<cr>", desc = "Run last test" },
-      { "<leader>tS", "<cmd>lua require('neotest').run.stop()<cr>", desc = "Stop test" },
+      { "<leader>tt", function() require('neotest').run.run() end, desc = "Run nearest test" },
+      { "<leader>td", function() require('neotest').run.run({ strategy = 'dap' }) end, desc = "Debug nearest test" },
+      { "<leader>tf", function() require('neotest').run.run(vim.fn.expand('%')) end, desc = "Run all tests in file" },
+      { "<leader>ts", function() require('neotest').summary.toggle() end, desc = "Toggle test summary" },
+      { "<leader>to", function() require('neotest').output.open({ enter = true }) end, desc = "Show test output" },
+      { "<leader>tO", function() require('neotest').output_panel.toggle() end, desc = "Toggle output panel" },
+      { "<leader>tl", function() require('neotest').run.run_last() end, desc = "Run last test" },
+      { "<leader>tS", function() require('neotest').run.stop() end, desc = "Stop test" },
     },
     config = function()
       require("neotest").setup({
         adapters = {
-          require("neotest-rust") {
-            args = { "--no-capture" },  -- Show println! output
-          },
+          require("neotest-golang")({
+            runner = "gotestsum",  -- Use gotestsum for better stability
+          }),
+          require("neotest-rust")({
+            args = { "--no-capture" },
+          }),
         },
-        -- Show test status in sign column
         status = {
           enabled = true,
-          virtual_text = false,  -- Don't clutter with virtual text
-          signs = true,          -- Show icons in sign column
+          virtual_text = false,
+          signs = true,
         },
-        -- Icons for test status
         icons = {
           passed = "✓",
           running = "⟳",
@@ -41,22 +52,19 @@ return {
           skipped = "⊘",
           unknown = "?",
         },
-        -- Floating window configuration
         floating = {
           border = "rounded",
           max_height = 0.8,
           max_width = 0.8,
         },
-        -- Output configuration
         output = {
           enabled = true,
-          open_on_run = false,  -- Don't auto-open output (use <leader>to)
+          open_on_run = false,
         },
-        -- Summary window (test explorer sidebar)
         summary = {
           enabled = true,
-          follow = true,         -- Follow current file
-          expand_errors = true,  -- Auto-expand failed tests
+          follow = true,
+          expand_errors = true,
         },
       })
     end,

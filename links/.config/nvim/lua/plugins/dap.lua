@@ -11,6 +11,8 @@ return {
       "theHamsta/nvim-dap-virtual-text",
       -- Mason integration for auto-installing debug adapters
       "jay-babu/mason-nvim-dap.nvim",
+      -- Go debugging integration (required by neotest-golang)
+      "leoluz/nvim-dap-go",
     },
     -- Load plugin when these keys are pressed AND map them
     keys = {
@@ -33,10 +35,13 @@ return {
 
       -- Setup mason-nvim-dap for automatic adapter installation
       require("mason-nvim-dap").setup({
-        ensure_installed = { "python", "codelldb" },
+        ensure_installed = { "python", "codelldb", "delve" },
         automatic_installation = true,
         handlers = {}, -- Uses default handlers for installed adapters
       })
+
+      -- Setup nvim-dap-go (required by neotest-golang)
+      require("dap-go").setup()
 
       -- Explicit codelldb adapter configuration
       local mason_registry_ok, mason_registry = pcall(require, "mason-registry")
@@ -50,6 +55,18 @@ return {
           executable = {
             command = codelldb_path,
             args = { "--port", "${port}" },
+          },
+        }
+      end
+
+      -- Explicit delve adapter configuration
+      if mason_registry_ok and mason_registry.is_installed("delve") then
+        dap.adapters.delve = {
+          type = "server",
+          port = "${port}",
+          executable = {
+            command = "dlv",
+            args = { "dap", "-l", "127.0.0.1:${port}" },
           },
         }
       end
@@ -179,6 +196,29 @@ return {
           cwd = "${workspaceFolder}",
           stopOnEntry = false,
           args = {},
+        },
+      }
+
+      -- Go configuration
+      dap.configurations.go = {
+        {
+          type = "delve",
+          name = "Debug",
+          request = "launch",
+          program = "${file}",
+        },
+        {
+          type = "delve",
+          name = "Debug test",
+          request = "launch",
+          mode = "test",
+          program = "${file}",
+        },
+        {
+          type = "delve",
+          name = "Debug package",
+          request = "launch",
+          program = "${fileDirname}",
         },
       }
 
