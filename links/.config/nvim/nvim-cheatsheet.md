@@ -149,7 +149,7 @@ Examples:
 
 ## 🔧 LSP (Language Server Protocol)
 
-**Works with: Python, Rust, Lua**
+**Works with: Python, Rust, Go, Lua**
 
 | Keybinding | Action | Description |
 |------------|--------|-------------|
@@ -321,7 +321,7 @@ Jump to any visible location with 2-3 keystrokes!
 
 ## 🐛 Debugging (DAP - Debug Adapter Protocol)
 
-**Interactive debugger for Python and Rust with breakpoints, stepping, and variable inspection**
+**Interactive debugger for Python, Rust, and Go with breakpoints, stepping, and variable inspection**
 
 ### Starting & Controlling Debugger
 | Keybinding | Action |
@@ -386,6 +386,13 @@ Jump to any visible location with 2-3 keystrokes!
 - Prompts for executable path when starting
 - Make sure to build with debug symbols: `cargo build`
 
+**Go:**
+- Debugs Go programs using Delve debugger
+- "Debug" - runs current file
+- "Debug test" - runs tests in current file
+- "Debug package" - debugs entire package
+- Build automatically includes debug symbols
+
 ### Debug Commands
 ```vim
 :DapContinue           # Start/continue debugging (same as F5)
@@ -397,9 +404,9 @@ Jump to any visible location with 2-3 keystrokes!
 ```
 
 **Installing Debug Adapters:**
-The debug adapters (debugpy for Python, codelldb for Rust) are automatically installed via Mason on first launch. If they're missing:
+The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are automatically installed via Mason on first launch. If they're missing:
 ```vim
-:Mason                 # Open Mason, search for debugpy and codelldb
+:Mason                 # Open Mason, search for debugpy, codelldb, or delve
 ```
 
 ---
@@ -512,8 +519,8 @@ Then:
 2. `<leader>ff` - Find files
 3. `<leader>fg` - Search in project
 
-### Editing Python/Rust Code
-1. Open file: `nvim main.py`
+### Editing Python/Rust/Go Code
+1. Open file: `nvim main.py` (or `main.rs`, `main.go`)
 2. Wait for LSP to attach (check bottom right)
 3. `gd` - Jump to definition
 4. `K` - Read documentation
@@ -527,8 +534,8 @@ Then:
 3. Exit Neovim and commit from terminal
 4. Or use `<leader>hb` to see blame
 
-### Running Tests (Rust)
-1. Open test file: `nvim src/bin/01.rs`
+### Running Tests (Rust/Go)
+1. Open test file: `nvim src/bin/01.rs` or `nvim main_test.go`
 2. `<leader>ts` - Open test explorer sidebar
 3. `<leader>tt` - Run test under cursor
 4. See ✓/✗ icons in sign column
@@ -549,7 +556,7 @@ Then:
 5. `:checkhealth` - Check Neovim health
 
 ### Debugging with Breakpoints (DAP)
-1. Open Python or Rust file: `nvim main.py`
+1. Open Python, Rust, or Go file: `nvim main.py` / `main.rs` / `main.go`
 2. Set breakpoint: `<leader>db` on the line you want to pause at
 3. Start debugging: `F5` (prompts for debug config)
 4. Debug UI opens automatically with variables/call stack
@@ -560,6 +567,7 @@ Then:
 
 **Python debugging tip:** Activate your venv first for proper imports!
 **Rust debugging tip:** Build with debug symbols: `cargo build` (not `--release`)
+**Go debugging tip:** Delve works out of the box, just press `F5` to start!
 
 ---
 

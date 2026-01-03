@@ -3,6 +3,7 @@ return {
   -- Core treesitter
   {
     "nvim-treesitter/nvim-treesitter",
+    branch = "main",  -- REQUIRED for neotest-golang v2+
     build = ":TSUpdate",
     lazy = false,
     priority = 100,

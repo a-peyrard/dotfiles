@@ -14,6 +14,9 @@ return {
 
         -- Lua: stylua for formatting (keeps your Neovim config clean)
         lua = { "stylua" },
+
+        -- Go: goimports for imports + gofmt for formatting
+        go = { "goimports", "gofmt" },
       },
 
       -- Manual formatting only (use <leader>f)

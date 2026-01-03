@@ -64,6 +64,7 @@ return {
           "rust_analyzer", -- Rust
           "pyright",       -- Python
           "lua_ls",        -- Lua
+          "gopls",         -- Go
         },
         -- IMPORTANT: Disable automatic_enable (Neovim 0.11+)
         -- We want to use lspconfig.setup() with our on_attach, not vim.lsp.enable()
