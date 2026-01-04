@@ -283,14 +283,20 @@ Jump to any visible location with 2-3 keystrokes!
 ### Hunk Operations
 | Keybinding | Action |
 |------------|--------|
-| `<leader>hs` | Stage hunk |
-| `<leader>hr` | Reset hunk |
+| `<leader>hs` | Stage hunk (n) / Stage selected lines (v) |
+| `<leader>hr` | Reset hunk (n) / Reset selected lines (v) |
 | `<leader>hS` | Stage entire buffer |
 | `<leader>hu` | Undo stage hunk |
 | `<leader>hR` | Reset entire buffer |
 | `<leader>hp` | Preview hunk |
 | `<leader>hb` | Blame line |
 | `<leader>hd` | Diff this |
+
+**Visual mode workflow:**
+1. Enter visual mode with `V` (line) or `v` (character)
+2. Select the lines you want to stage/reset
+3. Press `<leader>hr` to revert selected lines to HEAD
+4. Or press `<leader>hs` to stage only selected lines
 
 ---
 
@@ -539,9 +545,10 @@ Then:
 
 ### Git Workflow
 1. `<leader>hp` - Preview changes
-2. `<leader>hs` - Stage hunks you want
-3. Exit Neovim and commit from terminal
-4. Or use `<leader>hb` to see blame
+2. `<leader>hs` - Stage hunks you want (or visually select lines and stage them)
+3. `<leader>hr` - Reset unwanted changes (or visually select lines to revert)
+4. Exit Neovim and commit from terminal
+5. Or use `<leader>hb` to see blame
 
 ### Running Tests (Rust/Go)
 1. Open test file: `nvim src/bin/01.rs` or `nvim main_test.go`
