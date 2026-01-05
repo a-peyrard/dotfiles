@@ -50,7 +50,7 @@ Examples:
 | `v` | Visual mode (character) |
 | `V` | Visual mode (line) |
 | `Ctrl+v` | Visual block mode |
-| `Esc` / `Ctrl+[` | Return to Normal mode |
+| `Esc` / `Ctrl+[` / `jk` | Return to Normal mode |
 
 ### Saving & Quitting
 | Command | Action |
@@ -596,21 +596,22 @@ Then:
 ## 🎓 Tips & Tricks
 
 1. **Leader key is space** - All `<leader>` commands start with spacebar
-2. **Which-key helps** - Press `<leader>` and wait to see available commands
-3. **Use relative line numbers** - Look at gutter, type number + motion (e.g., `7j`)
-4. **System clipboard is enabled** - `yy` to copy, then `Cmd+v` in any app!
-5. **Scroll long floating windows** - Press `Ctrl+w w` to enter any floating window, then scroll with `j/k`
-6. **Practice leap** - `s` is your best friend for fast navigation
-7. **Use Telescope** - Faster than file tree for known files (`<leader>ff`)
-8. **Learn dot command** - `.` repeats last change (super powerful)
-9. **Visual block mode** - `Ctrl+v` for column editing
-10. **Marks** - `ma` to set mark, `'a` to jump back
-11. **Macros** - `qa` to record macro in register a, `@a` to replay
-12. **Persistent undo** - Your undo history survives file closes!
-13. **Smart search** - `/foo` is case-insensitive, `/Foo` is case-sensitive
-14. **Clear search highlights** - Use `:noh` after searching
-15. **Mouse works in tmux** - Click to position cursor (but keyboard is faster!)
-16. **Splits open smart** - Vertical splits go right, horizontal go below
+2. **Quick escape from insert mode** - Type `jk` to exit insert mode (faster than reaching for Esc)
+3. **Which-key helps** - Press `<leader>` and wait to see available commands
+4. **Use relative line numbers** - Look at gutter, type number + motion (e.g., `7j`)
+5. **System clipboard is enabled** - `yy` to copy, then `Cmd+v` in any app!
+6. **Scroll long floating windows** - Press `Ctrl+w w` to enter any floating window, then scroll with `j/k`
+7. **Practice leap** - `s` is your best friend for fast navigation
+8. **Use Telescope** - Faster than file tree for known files (`<leader>ff`)
+9. **Learn dot command** - `.` repeats last change (super powerful)
+10. **Visual block mode** - `Ctrl+v` for column editing
+11. **Marks** - `ma` to set mark, `'a` to jump back
+12. **Macros** - `qa` to record macro in register a, `@a` to replay
+13. **Persistent undo** - Your undo history survives file closes!
+14. **Smart search** - `/foo` is case-insensitive, `/Foo` is case-sensitive
+15. **Clear search highlights** - Use `:noh` after searching
+16. **Mouse works in tmux** - Click to position cursor (but keyboard is faster!)
+17. **Splits open smart** - Vertical splits go right, horizontal go below
 
 ---
 
