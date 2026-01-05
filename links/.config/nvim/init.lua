@@ -8,8 +8,14 @@ require("config.options")
 -- Load general keybindings
 require("config.keymaps")
 
--- Bootstrap lazy.nvim plugin manager
-require("config.lazy")
+-- Conditional loading: VSCode vs Full Neovim
+if vim.g.vscode then
+  -- VSCode mode: load minimal plugin config
+  require("vscode_config")
+else
+  -- Full Neovim mode: load all plugins
+  require("config.lazy")
+end
 
 -- Load private/work configuration if it exists
 -- Private config location: ~/.config/nvim.private/init.lua
