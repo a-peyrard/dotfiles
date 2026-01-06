@@ -48,23 +48,47 @@ else
     if [ "$APP_WS" = "$CURRENT_WS" ]; then
         # App is here, hide all windows
         echo "$(date): Hiding all $APP_NAME windows (moving to $HIDDEN_WS)" >> "$LOG"
+
+        # Check if current focused window belongs to this app and save it
+        FOCUSED_WINDOW=$(aerospace list-windows --focused --format "%{window-id}")
+        echo "$(date): Currently focused window: $FOCUSED_WINDOW" >> "$LOG"
+        if echo "$ALL_WINDOWS" | grep -q "^$FOCUSED_WINDOW$"; then
+            echo "$FOCUSED_WINDOW" > "/tmp/aerospace-${APP_NAME}-focused-window"
+            echo "$(date): Saved focused window $FOCUSED_WINDOW" >> "$LOG"
+        fi
+
         echo "$ALL_WINDOWS" | while read -r wid; do
             aerospace move-node-to-workspace --window-id "$wid" "$HIDDEN_WS"
         done
     else
         # App is elsewhere, bring all windows here
         echo "$(date): Showing all $APP_NAME windows (moving to $CURRENT_WS)" >> "$LOG"
-        
+
         echo "$ALL_WINDOWS" | while read -r wid; do
             echo "$(date): Processing window $wid" >> "$LOG"
             aerospace fullscreen --window-id "$wid" on
             aerospace move-node-to-workspace --window-id "$wid" "$CURRENT_WS"
             aerospace layout --window-id "$wid" floating
         done
-        
-        # Focus the first window
-        echo "$(date): Changing focus for $APP_WINDOW" >> "$LOG"
-        aerospace focus --window-id "$APP_WINDOW"
+
+        # Restore focus to previously focused window if it still exists
+        SAVED_FOCUSED="/tmp/aerospace-${APP_NAME}-focused-window"
+        if [ -f "$SAVED_FOCUSED" ]; then
+            FOCUSED_WINDOW=$(cat "$SAVED_FOCUSED")
+            echo "$(date): Attempting to restore focus to saved window $FOCUSED_WINDOW" >> "$LOG"
+            if echo "$ALL_WINDOWS" | grep -q "^$FOCUSED_WINDOW$"; then
+                aerospace focus --window-id "$FOCUSED_WINDOW"
+                echo "$(date): Restored focus to window $FOCUSED_WINDOW" >> "$LOG"
+            else
+                # Saved window no longer exists, focus first window
+                echo "$(date): Saved window no longer exists, focusing first window $APP_WINDOW" >> "$LOG"
+                aerospace focus --window-id "$APP_WINDOW"
+            fi
+        else
+            # No saved focus, default to first window
+            echo "$(date): No saved focus, focusing first window $APP_WINDOW" >> "$LOG"
+            aerospace focus --window-id "$APP_WINDOW"
+        fi
     fi
 fi
 
