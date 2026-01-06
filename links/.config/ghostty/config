@@ -1,0 +1,105 @@
+# This is the configuration file for Ghostty.
+#
+# This template file has been automatically created at the following
+# path since Ghostty couldn't find any existing config files on your system:
+#
+#   /Users/augustin/Library/Application Support/com.mitchellh.ghostty/config
+#
+# The template does not set any default options, since Ghostty ships
+# with sensible defaults for all options. Users should only need to set
+# options that they want to change from the default.
+#
+# Run `ghostty +show-config --default --docs` to view a list of
+# all available config options and their default values.
+#
+# Additionally, each config option is also explained in detail
+# on Ghostty's website, at https://ghostty.org/docs/config.
+
+# Config syntax crash course
+# ==========================
+# # The config file consists of simple key-value pairs,
+# # separated by equals signs.
+# font-family = Iosevka
+# window-padding-x = 2
+#
+# # Spacing around the equals sign does not matter.
+# # All of these are identical:
+# key=value
+# key= value
+# key =value
+# key = value
+#
+# # Any line beginning with a # is a comment. It's not possible to put
+# # a comment after a config option, since it would be interpreted as a
+# # part of the value. For example, this will have a value of "#123abc":
+# background = #123abc
+#
+# # Empty values are used to reset config keys to default.
+# key =
+#
+# # Some config options have unique syntaxes for their value,
+# # which is explained in the docs for that config option.
+# # Just for example:
+# resize-overlay-duration = 4s 200ms
+
+# visor, quake like
+#keybind = global:ctrl+shift+z=toggle_quick_terminal
+#quick-terminal-autohide = false
+#quick-terminal-animation-duration = 0.0
+#quick-terminal-screen = macos-menu-bar
+#quick-terminal-size = 100%,100%
+
+initial-window = true
+
+# no bar
+window-decoration = auto
+macos-titlebar-style = tabs
+macos-window-buttons = hidden
+window-padding-x = 10
+window-padding-y = 10
+
+# title
+shell-integration-features = no-title
+
+# transparency/opacity
+keybind = cmd+u=toggle_background_opacity
+background-opacity = 0.8
+
+# Ghostty color scheme converted from iTerm2
+# ANSI color palette
+palette = 0=#191a1a
+palette = 1=#cb7872
+palette = 2=#a7df96
+palette = 3=#e6bd79
+palette = 4=#81a7eb
+palette = 5=#e0c59e
+palette = 6=#9db5d6
+palette = 7=#c5b9ab
+palette = 8=#655756
+palette = 9=#c9714c
+palette = 10=#9eb447
+palette = 11=#f5b97b
+palette = 12=#a5d5ec
+palette = 13=#a37b26
+palette = 14=#c1cfe2
+palette = 15=#e1d6c9
+# Main colors
+background = #1a1b1a
+foreground = #e6f0e5
+cursor-color = #e3cbef
+cursor-text = #000000
+selection-background = #606060
+selection-foreground = #ffffff
+
+# Font configuration
+font-family = "Menlo"
+font-size = 13
+font-style-bold = true
+font-style-italic = true
+
+# manage the main window
+initial-command = /Users/augustin/.bin/local-tmux
+
+# navigate between tabs
+keybind = cmd+left=previous_tab
+keybind = cmd+right=next_tab
