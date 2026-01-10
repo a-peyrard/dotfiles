@@ -208,7 +208,7 @@ on-mode-changed = []
     # toggle iterm (commented to give a try to ghostty)
 #    ctrl-shift-z = 'exec-and-forget ~/.bin/toggle-iterm.sh'
     # toggle ghostty
-		ctrl-shift-z = 'exec-and-forget ~/.bin/toggle-app.sh Ghostty com.mitchellh.ghostty S'
+		cmd-j= 'exec-and-forget ~/.bin/toggle-app.sh Ghostty com.mitchellh.ghostty S'
 
 # 'service' binding mode declaration.
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
