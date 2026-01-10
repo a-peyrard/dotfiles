@@ -5,6 +5,12 @@ return {
     "MunifTanjim/nui.nvim",
     "rcarriga/nvim-notify",
   },
+  keys = {
+    { "<leader>snl", "<cmd>Noice last<cr>", desc = "Noice Last Message" },
+    { "<leader>snh", "<cmd>Noice history<cr>", desc = "Noice History" },
+    { "<leader>snd", "<cmd>Noice dismiss<cr>", desc = "Dismiss All" },
+    { "<leader>sna", "<cmd>Noice all<cr>", desc = "Noice All" },
+  },
   opts = {
     cmdline = {
       view = "cmdline_popup", -- floating cmdline at top

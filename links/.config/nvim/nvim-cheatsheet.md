@@ -437,6 +437,22 @@ The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are aut
 
 ---
 
+## 💬 Messages & Notifications (Noice)
+
+| Keybinding | Action |
+|------------|--------|
+| `<leader>snl` | Show last message |
+| `<leader>snh` | Message history |
+| `<leader>snd` | Dismiss all notifications |
+| `<leader>sna` | Show all messages |
+
+**Commands:**
+- `:Noice` — Open message history
+- `:Noice last` — Show last message
+- `:Noice errors` — Show errors only
+
+---
+
 ## 🪟 Window & Split Management
 
 ### Creating Splits
