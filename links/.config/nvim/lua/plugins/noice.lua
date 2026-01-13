@@ -3,17 +3,27 @@ return {
   event = "VeryLazy",
   dependencies = {
     "MunifTanjim/nui.nvim",
-    "rcarriga/nvim-notify",
+    -- nvim-notify removed - using snacks.notifier instead
   },
   keys = {
     { "<leader>snl", "<cmd>Noice last<cr>", desc = "Noice Last Message" },
-    { "<leader>snh", "<cmd>Noice history<cr>", desc = "Noice History" },
-    { "<leader>snd", "<cmd>Noice dismiss<cr>", desc = "Dismiss All" },
     { "<leader>sna", "<cmd>Noice all<cr>", desc = "Noice All" },
   },
   opts = {
     cmdline = {
       view = "cmdline_popup", -- floating cmdline at top
+    },
+    -- Route notifications to snacks.notifier instead of nvim-notify
+    routes = {
+      {
+        filter = { event = "notify" },
+        view = "notify",
+      },
+    },
+    -- Use snacks.notifier as the notify backend
+    notify = {
+      enabled = true,
+      view = "notify",
     },
     presets = {
       bottom_search = false, -- use floating window for search too
