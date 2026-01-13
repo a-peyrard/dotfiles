@@ -59,6 +59,11 @@ return {
         vim.keymap.set('n', ']d', vim.diagnostic.goto_next, opts)
         vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, opts)
         vim.keymap.set('n', 'gl', vim.diagnostic.open_float, opts)
+
+        -- Enable inlay hints by default if supported
+        if client.supports_method("textDocument/inlayHint") then
+          vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+        end
       end
 
       -- Setup mason-lspconfig
