@@ -248,17 +248,21 @@ Examples:
 
 ---
 
-## ⚡ Leap (Fast Navigation)
+## ⚡ Flash (Fast Navigation)
 
-Jump to any visible location with 2-3 keystrokes!
+Jump to any visible location with labels!
 
 | Keybinding | Action |
 |------------|--------|
-| `s{char}{char}` | Leap forward |
-| `S{char}{char}` | Leap backward |
-| `gs{char}{char}` | Leap to other windows |
+| `s{char}{char}` | Flash jump (type chars, then label) |
+| `S` | Flash Treesitter (select syntax node) |
+| `f{char}` / `F{char}` | Enhanced f/F with jump labels |
+| `t{char}` / `T{char}` | Enhanced t/T with jump labels |
+| `<C-s>` | Toggle Flash during `/` search |
 
-**Example:** Type `sth` to jump to the next occurrence of "th"
+**Flash jump example:** Type `sth` → labels appear on all "th" matches → press label to jump
+
+**Treesitter example:** Press `S` → syntax nodes are labeled → press label to select entire node (function, block, etc.)
 
 ---
 
@@ -641,7 +645,7 @@ Then:
 4. **Use relative line numbers** - Look at gutter, type number + motion (e.g., `7j`)
 5. **System clipboard is enabled** - `yy` to copy, then `Cmd+v` in any app!
 6. **Scroll long floating windows** - Press `Ctrl+w w` to enter any floating window, then scroll with `j/k`
-7. **Practice leap** - `s` is your best friend for fast navigation
+7. **Practice flash** - `s` is your best friend for fast navigation
 8. **Use picker** - Faster than file tree for known files (`<leader>ff`)
 9. **Learn dot command** - `.` repeats last change (super powerful)
 10. **Visual block mode** - `Ctrl+v` for column editing
@@ -677,7 +681,7 @@ Then:
 - `<leader>e` - File explorer
 - `<leader>ts` - Test explorer sidebar
 - `<leader>tt` - Run test under cursor
-- `s{char}{char}` - Leap navigation
+- `s{char}{char}` - Flash navigation
 - `gd` - Go to definition
 - `K` - Show hover docs/type info
 - `gK` - Show function signature (works in params!)

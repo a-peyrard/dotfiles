@@ -12,15 +12,24 @@ vim.opt.rtp:prepend(lazypath)
 
 -- Load ONLY these minimal plugins in VSCode (NOT the lua/plugins/ directory)
 require("lazy").setup({
-  -- Fast navigation with leap.nvim
-  -- Usage: s{char}{char} to jump forward, S{char}{char} to jump backward
+  -- Fast navigation with flash.nvim
+  -- Usage: s{char}{char} to jump, S for Treesitter selection
   {
-    "ggandor/leap.nvim",
-    config = function()
-      vim.keymap.set({ "n", "x", "o" }, "s", "<Plug>(leap-forward)")
-      vim.keymap.set({ "n", "x", "o" }, "S", "<Plug>(leap-backward)")
-      vim.keymap.set({ "n", "x", "o" }, "gs", "<Plug>(leap-from-window)")
-    end,
+    "folke/flash.nvim",
+    event = "VeryLazy",
+    opts = {
+      labels = "asdfghjklqwertyuiopzxcvbnm",
+      modes = {
+        char = {
+          enabled = true,
+          jump_labels = true,
+        },
+      },
+    },
+    keys = {
+      { "s", mode = { "n", "x", "o" }, function() require("flash").jump() end, desc = "Flash jump" },
+      { "S", mode = { "n", "x", "o" }, function() require("flash").treesitter() end, desc = "Flash Treesitter" },
+    },
   },
 
   -- Optional: Add more VSCode-compatible plugins here after testing
