@@ -51,6 +51,10 @@ return {
           require("conform").format({ async = true, lsp_fallback = true })
         end, opts)
 
+        -- Call hierarchy
+        vim.keymap.set('n', '<leader>ci', vim.lsp.buf.incoming_calls, opts)
+        vim.keymap.set('n', '<leader>co', vim.lsp.buf.outgoing_calls, opts)
+
         -- Diagnostic navigation
         vim.keymap.set('n', ']d', vim.diagnostic.goto_next, opts)
         vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, opts)
