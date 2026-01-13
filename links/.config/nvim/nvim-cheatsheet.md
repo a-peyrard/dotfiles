@@ -207,7 +207,7 @@ Examples:
 
 ---
 
-## 🔍 Telescope (Fuzzy Finder)
+## 🔍 Picker (snacks.nvim)
 
 | Keybinding | Action | Description |
 |------------|--------|-------------|
@@ -215,79 +215,33 @@ Examples:
 | `<leader>fg` | Live Grep | Search in file contents |
 | `<leader>fb` | Buffers | List open buffers |
 | `<leader>fh` | Help Tags | Search help documentation |
+| `<leader>fk` | Keymaps | Search all keybindings |
+| `<leader>fc` | Commands | Search all commands |
+| `<leader>fr` | Recent Files | Recently opened files |
+| `<leader>fd` | Diagnostics | Search diagnostics |
+| `<leader>fs` | LSP Symbols | Search symbols in buffer |
 
-### Within Telescope
+### Git Pickers
+| Keybinding | Action |
+|------------|--------|
+| `<leader>gc` | Git commits |
+| `<leader>gb` | Git branches |
+| `<leader>gs` | Git status |
+
+### Within Picker
 | Key | Action |
 |-----|--------|
 | `Ctrl+j` / `Ctrl+k` | Move down/up |
-| `Ctrl+n` / `Ctrl+p` | Next/Previous |
 | `Enter` | Select |
 | `Esc` | Close |
-| `Ctrl+c` | Cancel |
 
 ---
 
-## 🎯 Command Palette & Discovery
-
-### Command Palette (Legendary)
-**Like VSCode/IntelliJ Cmd+Shift+P - searchable list of all commands and keybindings**
+## 📁 Explorer (snacks.nvim)
 
 | Keybinding | Action |
 |------------|--------|
-| `<leader>p` | Open command palette |
-
-**Within Command Palette:**
-- Type to fuzzy search all commands, keymaps, and autocmds
-- `Enter` to execute selected command
-- `Esc` to close
-- Shows keybinding next to each command (if available)
-- Integrates with which-key - all your bindings are searchable!
-
-**Use cases:**
-- Forgot a keybinding? Press `<leader>p` and search for the command
-- Discover available commands by typing keywords (e.g., "test", "git", "debug")
-- Execute commands without remembering exact syntax
-
-### Fuzzy Command Completion (Wilder)
-**Enhanced command-line with fuzzy matching as you type**
-
-When you type `:`, `/`, or `?`:
-- Fuzzy-matched suggestions appear in popup menu
-- Type partial matches (e.g., `:Lazi` matches `:Lazy`)
-- Icons show command types
-- Scrollbar for long lists
-- Works for Ex commands, searches, and help
-
-**Example:**
-- Type `:tele` → suggests `:Telescope`, `:Telescope find_files`, etc.
-- Type `:Mas` → suggests `:Mason`, `:MasonInstall`, `:MasonUpdate`
-- Type `/foo` → fuzzy search with live suggestions
-
----
-
-## 📁 Neo-tree (File Explorer)
-
-| Keybinding | Action |
-|------------|--------|
-| `<leader>e` | Toggle file tree |
-
-### Within Neo-tree
-| Key | Action |
-|-----|--------|
-| `Space` | Toggle node (expand/collapse) |
-| `Enter` | Open file |
-| `s` | Open in horizontal split |
-| `v` | Open in vertical split |
-| `t` | Open in new tab |
-| `a` | Add file/directory |
-| `d` | Delete |
-| `r` | Rename |
-| `y` | Copy to clipboard |
-| `x` | Cut to clipboard |
-| `p` | Paste from clipboard |
-| `R` | Refresh |
-| `C` | Close node |
-| `?` | Show help |
+| `<leader>e` | Toggle file explorer |
 
 ---
 
@@ -481,14 +435,19 @@ The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are aut
 
 ---
 
-## 💬 Messages & Notifications (Noice)
+## 💬 Messages & Notifications
 
+### Noice (Cmdline & Messages)
 | Keybinding | Action |
 |------------|--------|
 | `<leader>snl` | Show last message |
-| `<leader>snh` | Message history |
-| `<leader>snd` | Dismiss all notifications |
 | `<leader>sna` | Show all messages |
+
+### Snacks Notifier
+| Keybinding | Action |
+|------------|--------|
+| `<leader>snd` | Dismiss all notifications |
+| `<leader>snh` | Notification history |
 
 **Commands:**
 - `:Noice` — Open message history
@@ -542,7 +501,7 @@ The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are aut
 | `:bp` / `:bprev` | Previous buffer |
 | `:bd` / `:bdelete` | Delete buffer |
 | `:ls` / `:buffers` | List buffers |
-| `<leader>fb` | Fuzzy find buffers (Telescope) |
+| `<leader>fb` | Fuzzy find buffers |
 
 ### Tabs
 | Command | Action |
@@ -662,7 +621,7 @@ Then:
 5. **System clipboard is enabled** - `yy` to copy, then `Cmd+v` in any app!
 6. **Scroll long floating windows** - Press `Ctrl+w w` to enter any floating window, then scroll with `j/k`
 7. **Practice leap** - `s` is your best friend for fast navigation
-8. **Use Telescope** - Faster than file tree for known files (`<leader>ff`)
+8. **Use picker** - Faster than file tree for known files (`<leader>ff`)
 9. **Learn dot command** - `.` repeats last change (super powerful)
 10. **Visual block mode** - `Ctrl+v` for column editing
 11. **Marks** - `ma` to set mark, `'a` to jump back
@@ -677,7 +636,7 @@ Then:
 
 ## 📚 Resources
 
-- `:help <topic>` - Built-in help (e.g., `:help telescope`)
+- `:help <topic>` - Built-in help (e.g., `:help snacks`)
 - `:Tutor` - Interactive Vim tutorial
 - `:checkhealth` - Diagnose issues
 - CLAUDE.md in `~/.config/nvim/` - Configuration documentation
@@ -690,9 +649,11 @@ Then:
 - `<leader>` = **Spacebar** (press Space and wait to see which-key popup!)
 
 **Most Used:**
-- `<leader>p` - Command palette (search all commands/keybindings)
+- `<leader>fk` - Search keymaps (find any keybinding)
+- `<leader>fc` - Search commands
 - `<leader>ff` - Find files
-- `<leader>e` - File tree
+- `<leader>fg` - Live grep
+- `<leader>e` - File explorer
 - `<leader>ts` - Test explorer sidebar
 - `<leader>tt` - Run test under cursor
 - `s{char}{char}` - Leap navigation
@@ -730,4 +691,4 @@ Then:
 - Smart case-sensitive search
 - Indent guides with scope highlighting
 
-**Remember:** When stuck, press `<leader>` (Space) and wait for which-key to show options!
+**Remember:** When stuck, press `<leader>` (Space) and wait for which-key to show options! Or use `<leader>fk` to search keymaps.
