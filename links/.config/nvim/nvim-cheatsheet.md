@@ -219,7 +219,10 @@ Examples:
 | `<leader>fc` | Commands | Search all commands |
 | `<leader>fr` | Recent Files | Recently opened files |
 | `<leader>fd` | Diagnostics | Search diagnostics |
-| `<leader>fs` | LSP Symbols | Search symbols in buffer |
+| `<leader>fs` | LSP Symbols (buffer) | Symbols in current file |
+| `<leader>fS` | LSP Symbols (project) | Search symbols across project |
+| `<leader>fi` | Icons/Emoji | Pick icons and emoji |
+| `<leader>ft` | Themes | Pick colorscheme with live preview |
 
 ### Git Pickers
 | Keybinding | Action |
