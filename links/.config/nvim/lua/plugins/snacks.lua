@@ -76,6 +76,7 @@ return {
     { "<leader>fs", function() Snacks.picker.lsp_symbols() end, desc = "LSP Symbols (buffer)" },
     { "<leader>fS", function() Snacks.picker.lsp_workspace_symbols() end, desc = "LSP Symbols (project)" },
     { "<leader>fi", function() Snacks.picker.icons() end, desc = "Icons/Emoji" },
+    { "<leader>ft", function() Snacks.picker.colorschemes() end, desc = "Themes/Colorschemes" },
 
     -- Git pickers
     { "<leader>gc", function() Snacks.picker.git_log() end, desc = "Git Commits" },
