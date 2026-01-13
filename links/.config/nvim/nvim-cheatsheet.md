@@ -275,6 +275,8 @@ Jump to any visible location with 2-3 keystrokes!
 
 ## 🎨 Git (gitsigns)
 
+**For Git repositories**
+
 ### Navigation
 | Keybinding | Action |
 |------------|--------|
@@ -298,6 +300,22 @@ Jump to any visible location with 2-3 keystrokes!
 2. Select the lines you want to stage/reset
 3. Press `<leader>hr` to revert selected lines to HEAD
 4. Or press `<leader>hs` to stage only selected lines
+
+---
+
+## 🔶 Mercurial/Sapling (vim-signify)
+
+**For Mercurial and Sapling repositories**
+
+| Keybinding | Action |
+|------------|--------|
+| `]c` | Next hunk |
+| `[c` | Previous hunk |
+| `<leader>hd` | Diff this |
+| `<leader>hp` | Preview hunk |
+| `<leader>hu` | Undo hunk |
+
+**Note:** Same gutter signs as Git (+/-/~). Auto-detects VCS type.
 
 ---
 
