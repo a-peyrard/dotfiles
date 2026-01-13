@@ -166,6 +166,12 @@ Examples:
 - `gK` anywhere inside a function call → shows signature with parameter names & types
 - Example: In `myFunc(arg1, arg2)`, cursor on `arg1` → press `gK` to see what parameters `myFunc` expects
 
+### Call Hierarchy
+| Keybinding | Action |
+|------------|--------|
+| `<leader>ci` | Incoming calls (who calls this function) |
+| `<leader>co` | Outgoing calls (what this function calls) |
+
 ### Diagnostic Navigation & Viewing
 | Keybinding | Action |
 |------------|--------|
@@ -218,6 +224,44 @@ Examples:
 | `Enter` | Select |
 | `Esc` | Close |
 | `Ctrl+c` | Cancel |
+
+---
+
+## 🎯 Command Palette & Discovery
+
+### Command Palette (Legendary)
+**Like VSCode/IntelliJ Cmd+Shift+P - searchable list of all commands and keybindings**
+
+| Keybinding | Action |
+|------------|--------|
+| `<leader>p` | Open command palette |
+
+**Within Command Palette:**
+- Type to fuzzy search all commands, keymaps, and autocmds
+- `Enter` to execute selected command
+- `Esc` to close
+- Shows keybinding next to each command (if available)
+- Integrates with which-key - all your bindings are searchable!
+
+**Use cases:**
+- Forgot a keybinding? Press `<leader>p` and search for the command
+- Discover available commands by typing keywords (e.g., "test", "git", "debug")
+- Execute commands without remembering exact syntax
+
+### Fuzzy Command Completion (Wilder)
+**Enhanced command-line with fuzzy matching as you type**
+
+When you type `:`, `/`, or `?`:
+- Fuzzy-matched suggestions appear in popup menu
+- Type partial matches (e.g., `:Lazi` matches `:Lazy`)
+- Icons show command types
+- Scrollbar for long lists
+- Works for Ex commands, searches, and help
+
+**Example:**
+- Type `:tele` → suggests `:Telescope`, `:Telescope find_files`, etc.
+- Type `:Mas` → suggests `:Mason`, `:MasonInstall`, `:MasonUpdate`
+- Type `/foo` → fuzzy search with live suggestions
 
 ---
 
@@ -646,6 +690,7 @@ Then:
 - `<leader>` = **Spacebar** (press Space and wait to see which-key popup!)
 
 **Most Used:**
+- `<leader>p` - Command palette (search all commands/keybindings)
 - `<leader>ff` - Find files
 - `<leader>e` - File tree
 - `<leader>ts` - Test explorer sidebar
