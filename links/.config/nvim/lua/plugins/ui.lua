@@ -5,7 +5,26 @@ return {
     "folke/which-key.nvim",
     event = "VeryLazy",
     config = function()
-      require("which-key").setup({})
+      require("which-key").setup({
+        win = {
+          -- Floating window at bottom-right
+          border = "rounded",
+          padding = { 1, 2 },  -- { top/bottom, left/right }
+          wo = {
+            winblend = 0,  -- Fully opaque
+          },
+          -- Position at bottom-right
+          width = { min = 20, max = 50 },
+          height = { min = 4, max = 25 },
+          row = -1,  -- Bottom of screen
+          col = -1,  -- Right of screen
+        },
+        layout = {
+          -- Column layout for better vertical display
+          spacing = 3,
+          align = "left",
+        },
+      })
     end,
   },
 
