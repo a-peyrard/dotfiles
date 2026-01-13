@@ -540,6 +540,10 @@ The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are aut
 
 ## ⚙️ Configuration Management
 
+### Autosave (IntelliJ-like)
+- Automatically saves when switching apps or buffers
+- `<leader>ua` - Toggle autosave on/off
+
 ### Reloading Config
 ```vim
 :source $MYVIMRC       # Reload init.lua

@@ -119,6 +119,53 @@ vim.diagnostic.config({
 })
 
 -- ============================================================================
+-- Autosave (IntelliJ-like behavior)
+-- ============================================================================
+
+-- Global variable to track autosave state
+vim.g.autosave_enabled = true
+
+-- Helper function to perform silent save
+local function autosave()
+  -- Only save if autosave is enabled, buffer is modified, and has a filename
+  if vim.g.autosave_enabled
+    and vim.bo.modified
+    and vim.bo.buftype == ""
+    and vim.fn.expand("%") ~= "" then
+    vim.cmd("silent! write")
+  end
+end
+
+-- Create autosave autocommands
+local autosave_group = vim.api.nvim_create_augroup("Autosave", { clear = true })
+
+-- Save when leaving Neovim (switching to another app)
+vim.api.nvim_create_autocmd("FocusLost", {
+  group = autosave_group,
+  pattern = "*",
+  callback = autosave,
+  desc = "Autosave on focus lost",
+})
+
+-- Save when switching buffers
+vim.api.nvim_create_autocmd("BufLeave", {
+  group = autosave_group,
+  pattern = "*",
+  callback = autosave,
+  desc = "Autosave on buffer leave",
+})
+
+-- Toggle autosave on/off
+vim.keymap.set("n", "<leader>ua", function()
+  vim.g.autosave_enabled = not vim.g.autosave_enabled
+  if vim.g.autosave_enabled then
+    vim.notify("Autosave enabled", vim.log.levels.INFO)
+  else
+    vim.notify("Autosave disabled", vim.log.levels.WARN)
+  end
+end, { desc = "Toggle autosave" })
+
+-- ============================================================================
 -- Keymaps
 -- ============================================================================
 
