@@ -1,0 +1,14 @@
+[bundle]
+name = "server"
+description = "Headless Linux server configuration"
+extends = "base"
+target = "linux"
+
+[files]
+include = [
+    ".config/starship.toml",
+    ".env.d/linux/",
+]
+exclude = [
+    ".env.d/common/20_gui-app.env",
+]

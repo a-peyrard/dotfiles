@@ -3,3 +3,7 @@
 links/.vim/swaps
 .netrwhist
 
+# Bundle system private files
+*.private
+destinations.private
+bundles/**/*.private
