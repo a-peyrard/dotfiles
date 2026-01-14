@@ -1,0 +1,21 @@
+[bundle]
+name = "nas"
+description = "Lightweight NAS configuration"
+extends = "base"
+target = "linux"
+
+[files]
+exclude = [
+    ".bin/",
+    ".env.d/common/13_deno.env",
+    ".env.d/common/19_go.env",
+    ".env.d/common/20_gui-app.env",
+    ".env.d/common/22_latex.env",
+    ".env.d/common/24_meta.env",
+    ".env.d/common/33_pyenv.env",
+    ".env.d/common/34_rust.env",
+]
+
+[packages]
+# Lightweight NAS - no packages (install manually if needed)
+install = []

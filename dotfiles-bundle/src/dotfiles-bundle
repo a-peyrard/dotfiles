@@ -1,0 +1,1016 @@
+#!/usr/bin/env python3
+"""
+dotfiles-bundle - Bundle management for dotfiles deployment
+
+Usage:
+    dotfiles-bundle list                     List available bundles and destinations
+    dotfiles-bundle show <name>              Show bundle contents
+    dotfiles-bundle build <name>             Build bundle tarball
+    dotfiles-bundle deploy <name> [dest]     Build and deploy to destination
+    dotfiles-bundle pull <name> <dest>       Sync changes from remote
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from collections import defaultdict
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
+from pathlib import Path
+from typing import Any, NoReturn
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent  # src -> dotfiles-bundle -> repo root
+BUNDLES_DIR = REPO_ROOT / "bundles"
+LINKS_DIR = REPO_ROOT / "links"
+LINKS_IN_DEPTH_DIR = REPO_ROOT / "links-in-depth"
+UTIL_DIR = REPO_ROOT / "util"
+DESTINATIONS_FILE = REPO_ROOT / "destinations.private"
+
+# ============================================================================
+# TOML Loading
+# ============================================================================
+
+import tomllib
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    """Load TOML file."""
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def load_toml_from_string(content: str) -> dict[str, Any]:
+    """Load TOML from string."""
+    return tomllib.loads(content)
+
+
+def dump_toml(data: dict[str, Any]) -> str:
+    """Serialize dict to TOML string.
+
+    Note: tomllib (stdlib) is read-only. We use a basic implementation here
+    for override merging. Consider using tomli-w if more complex TOML output is needed.
+    """
+    lines = []
+    _dump_toml_section(data, [], lines)
+    return "\n".join(lines)
+
+
+def _dump_toml_section(data: dict, path: list[str], lines: list[str]):
+    """Recursively dump TOML sections."""
+    # First, dump simple key-value pairs
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            if isinstance(value, str):
+                lines.append(f'{key} = "{value}"')
+            elif isinstance(value, bool):
+                lines.append(f"{key} = {str(value).lower()}")
+            elif isinstance(value, list):
+                if all(isinstance(v, str) for v in value):
+                    formatted = ",\n    ".join(f'"{v}"' for v in value)
+                    lines.append(f"{key} = [\n    {formatted},\n]")
+                else:
+                    lines.append(f"{key} = {value}")
+            else:
+                lines.append(f"{key} = {value}")
+
+    # Then, dump nested sections
+    for key, value in data.items():
+        if isinstance(value, dict):
+            section_path = path + [key]
+            lines.append("")
+            lines.append(f"[{'.'.join(section_path)}]")
+            _dump_toml_section(value, section_path, lines)
+
+
+# ============================================================================
+# Utilities
+# ============================================================================
+
+
+def die(message: str, code: int = 1) -> NoReturn:
+    """Print error message and exit."""
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def info(message: str):
+    """Print info message."""
+    print(f"  {message}")
+
+
+def header(message: str):
+    """Print header message."""
+    print(f"\n{message}")
+
+
+def format_size(size: int) -> str:
+    """Format file size in human-readable format."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TB"
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    """Match a glob pattern against a path.
+
+    Supports:
+    - Simple wildcards: *.txt, .bin/*
+    - Directory patterns: .config/ (matches .config and .config/*)
+    - Double wildcards: **/.git/ (matches any .git directory)
+    """
+    import re
+
+    # Handle directory patterns (ending with /)
+    is_dir_pattern = pattern.endswith("/")
+    if is_dir_pattern:
+        pattern_base = pattern.rstrip("/")
+
+        # For patterns like **/.git/, match any .git directory
+        if "**" in pattern_base:
+            # Build regex: ** matches any path prefix (including empty)
+            regex = ""
+            i = 0
+            while i < len(pattern_base):
+                if pattern_base[i : i + 2] == "**":
+                    # ** followed by / means "match any prefix including empty"
+                    if i + 2 < len(pattern_base) and pattern_base[i + 2] == "/":
+                        regex += "(?:.*/)?"  # Match any prefix ending with / or nothing
+                        i += 3  # Skip **/
+                    else:
+                        regex += ".*"
+                        i += 2
+                elif pattern_base[i] == "*":
+                    regex += "[^/]*"
+                    i += 1
+                elif pattern_base[i] in ".^$+{}[]|()":
+                    regex += "\\" + pattern_base[i]
+                    i += 1
+                else:
+                    regex += pattern_base[i]
+                    i += 1
+            # Match the directory itself or anything inside it
+            return bool(re.match(f"^{regex}(?:/.*)?$", path))
+
+        # Simple directory pattern without **
+        return path.startswith(pattern_base + "/") or path == pattern_base
+
+    # Handle ** patterns (non-directory)
+    if "**" in pattern:
+        regex = ""
+        i = 0
+        while i < len(pattern):
+            if pattern[i : i + 2] == "**":
+                # ** followed by / means "match any prefix including empty"
+                if i + 2 < len(pattern) and pattern[i + 2] == "/":
+                    regex += "(?:.*/)?"
+                    i += 3  # Skip **/
+                else:
+                    regex += ".*"
+                    i += 2
+            elif pattern[i] == "*":
+                regex += "[^/]*"
+                i += 1
+            elif pattern[i] in ".^$+{}[]|()":
+                regex += "\\" + pattern[i]
+                i += 1
+            else:
+                regex += pattern[i]
+                i += 1
+        return bool(re.match(f"^{regex}$", path))
+
+    return fnmatch(path, pattern)
+
+
+# ============================================================================
+# Data Classes
+# ============================================================================
+
+
+@dataclass
+class BundleConfig:
+    """Parsed bundle configuration."""
+
+    name: str
+    description: str = ""
+    extends: str | None = None
+    target: str = "any"  # "linux", "macos", or "any"
+    files_include: list[str] = field(default_factory=list)
+    files_exclude: list[str] = field(default_factory=list)
+    runtime_include: list[str] = field(default_factory=list)
+    runtime_exclude: list[str] = field(default_factory=list)
+    packages_install: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Destination:
+    """Deployment target."""
+
+    name: str
+    target: str
+    ssh_opts: str = ""
+    default_bundle: str | None = None
+
+
+@dataclass
+class ResolvedFile:
+    """A resolved file ready for packaging."""
+
+    source_path: Path  # Absolute path to source
+    relative_path: str  # Path relative to $HOME in package
+    source_type: str  # 'links', 'links-in-depth', 'runtime', 'override'
+
+
+# ============================================================================
+# Bundle Resolution
+# ============================================================================
+
+
+class BundleResolver:
+    """Resolves bundle configuration with inheritance."""
+
+    def __init__(self, bundles_dir: Path | None = None):
+        self.bundles_dir = bundles_dir or BUNDLES_DIR
+        self._cache: dict[str, BundleConfig] = {}
+        self._resolving: set[str] = set()  # For circular dependency detection
+
+    def list_bundles(self) -> list[BundleConfig]:
+        """List all available bundles."""
+        bundles = []
+        if self.bundles_dir.exists():
+            # Look for directories containing bundle.toml
+            for bundle_dir in sorted(self.bundles_dir.iterdir()):
+                if bundle_dir.is_dir() and (bundle_dir / "bundle.toml").exists():
+                    try:
+                        config = self.resolve(bundle_dir.name)
+                        bundles.append(config)
+                    except Exception as e:
+                        print(f"Warning: Failed to load {bundle_dir.name}: {e}")
+        return bundles
+
+    def resolve(self, name: str) -> BundleConfig:
+        """Resolve bundle with inheritance chain."""
+        if name in self._cache:
+            return self._cache[name]
+
+        if name in self._resolving:
+            die(f"Circular inheritance detected: {name}")
+
+        self._resolving.add(name)
+
+        # Look for bundles/<name>/bundle.toml
+        toml_path = self.bundles_dir / name / "bundle.toml"
+        if not toml_path.exists():
+            die(f"Bundle not found: {name} (expected {toml_path})")
+
+        data = load_toml(toml_path)
+        bundle = self._parse_bundle(name, data)
+
+        if bundle.extends:
+            parent = self.resolve(bundle.extends)
+            bundle = self._merge_bundles(parent, bundle)
+
+        self._resolving.discard(name)
+        self._cache[name] = bundle
+        return bundle
+
+    def _parse_bundle(self, name: str, data: dict) -> BundleConfig:
+        """Parse bundle TOML data into BundleConfig."""
+        bundle_section = data.get("bundle", {})
+        files_section = data.get("files", {})
+        runtime_section = data.get("runtime", {})
+        packages_section = data.get("packages", {})
+
+        return BundleConfig(
+            name=bundle_section.get("name", name),
+            description=bundle_section.get("description", ""),
+            extends=bundle_section.get("extends"),
+            target=bundle_section.get("target", "any"),
+            files_include=files_section.get("include", []),
+            files_exclude=files_section.get("exclude", []),
+            runtime_include=runtime_section.get("include", []),
+            runtime_exclude=runtime_section.get("exclude", []),
+            packages_install=packages_section.get("install", []),
+        )
+
+    def _merge_bundles(self, parent: BundleConfig, child: BundleConfig) -> BundleConfig:
+        """Merge parent and child bundle configurations."""
+        # Deduplicate packages while preserving order
+        seen = set()
+        merged_packages = []
+        for pkg in parent.packages_install + child.packages_install:
+            if pkg not in seen:
+                seen.add(pkg)
+                merged_packages.append(pkg)
+
+        return BundleConfig(
+            name=child.name,
+            description=child.description or parent.description,
+            extends=None,  # Already resolved
+            target=child.target if child.target != "any" else parent.target,
+            files_include=parent.files_include + child.files_include,
+            files_exclude=parent.files_exclude + child.files_exclude,
+            runtime_include=parent.runtime_include + child.runtime_include,
+            runtime_exclude=parent.runtime_exclude + child.runtime_exclude,
+            packages_install=merged_packages,
+        )
+
+
+# ============================================================================
+# File Resolution
+# ============================================================================
+
+
+class FileResolver:
+    """Resolves file patterns to actual files."""
+
+    def __init__(self, links_dir: Path | None = None, links_in_depth_dir: Path | None = None, home_dir: Path | None = None):
+        self.links_dir = links_dir or LINKS_DIR
+        self.links_in_depth_dir = links_in_depth_dir or LINKS_IN_DEPTH_DIR
+        self.home_dir = home_dir or Path.home()
+
+    def resolve_bundle(self, config: BundleConfig) -> list[ResolvedFile]:
+        """Resolve all files for a bundle."""
+        files: dict[str, ResolvedFile] = {}
+
+        # Step 1: Resolve includes from links/
+        for pattern in config.files_include:
+            for resolved in self._resolve_pattern(pattern, self.links_dir, "links"):
+                files[resolved.relative_path] = resolved
+
+        # Step 2: Resolve includes from links-in-depth/
+        for pattern in config.files_include:
+            for resolved in self._resolve_pattern(
+                pattern, self.links_in_depth_dir, "links-in-depth"
+            ):
+                if resolved.relative_path not in files:
+                    files[resolved.relative_path] = resolved
+
+        # Step 3: Apply excludes
+        files = {
+            k: v
+            for k, v in files.items()
+            if not any(glob_match(ex, k) for ex in config.files_exclude)
+        }
+
+        # Step 4: Resolve runtime directories from $HOME
+        for pattern in config.runtime_include:
+            runtime_path = self.home_dir / pattern.rstrip("/")
+            if runtime_path.exists():
+                for resolved in self._walk_directory(
+                    runtime_path, "runtime"
+                ):
+                    # Check runtime excludes
+                    if not any(
+                        glob_match(ex, resolved.relative_path)
+                        for ex in config.runtime_exclude
+                    ):
+                        if resolved.relative_path not in files:
+                            files[resolved.relative_path] = resolved
+
+        return sorted(files.values(), key=lambda x: x.relative_path)
+
+    def _resolve_pattern(
+        self, pattern: str, base_dir: Path, source_type: str
+    ) -> list[ResolvedFile]:
+        """Resolve a single pattern in a directory."""
+        results = []
+
+        if not base_dir.exists():
+            return results
+
+        # Handle directory pattern (ending with /)
+        if pattern.endswith("/"):
+            dir_path = base_dir / pattern.rstrip("/")
+            if dir_path.exists() and dir_path.is_dir():
+                for file_path in dir_path.rglob("*"):
+                    if file_path.is_file():
+                        rel_path = str(file_path.relative_to(base_dir))
+                        results.append(
+                            ResolvedFile(
+                                source_path=file_path,
+                                relative_path=rel_path,
+                                source_type=source_type,
+                            )
+                        )
+            return results
+
+        # Handle glob patterns
+        if "*" in pattern:
+            for file_path in base_dir.glob(pattern):
+                if file_path.is_file():
+                    rel_path = str(file_path.relative_to(base_dir))
+                    results.append(
+                        ResolvedFile(
+                            source_path=file_path,
+                            relative_path=rel_path,
+                            source_type=source_type,
+                        )
+                    )
+                elif file_path.is_dir():
+                    # If glob matches a directory, include all files in it
+                    for sub_file in file_path.rglob("*"):
+                        if sub_file.is_file():
+                            rel_path = str(sub_file.relative_to(base_dir))
+                            results.append(
+                                ResolvedFile(
+                                    source_path=sub_file,
+                                    relative_path=rel_path,
+                                    source_type=source_type,
+                                )
+                            )
+            return results
+
+        # Handle exact file/directory match
+        exact_path = base_dir / pattern
+        if exact_path.exists():
+            if exact_path.is_file():
+                results.append(
+                    ResolvedFile(
+                        source_path=exact_path,
+                        relative_path=pattern,
+                        source_type=source_type,
+                    )
+                )
+            elif exact_path.is_dir():
+                for file_path in exact_path.rglob("*"):
+                    if file_path.is_file():
+                        rel_path = str(file_path.relative_to(base_dir))
+                        results.append(
+                            ResolvedFile(
+                                source_path=file_path,
+                                relative_path=rel_path,
+                                source_type=source_type,
+                            )
+                        )
+
+        return results
+
+    def _walk_directory(
+            self, dir_path: Path, source_type: str
+            ) -> list[ResolvedFile]:
+        """Walk a directory and return all files."""
+        results = []
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file():
+                rel_path = str(file_path.relative_to(self.home_dir))
+                results.append(
+                    ResolvedFile(
+                        source_path=file_path,
+                        relative_path=rel_path,
+                        source_type=source_type,
+                    )
+                )
+        return results
+
+
+# ============================================================================
+# Override System
+# ============================================================================
+
+
+class OverrideManager:
+    """Manages bundle-specific file overrides."""
+
+    def __init__(self, bundles_dir: Path | None = None):
+        self.bundles_dir = bundles_dir or BUNDLES_DIR
+
+    def find_overrides(self, bundle_name: str, relative_path: str) -> list[Path]:
+        """Find override chain for a file (public + private)."""
+        overrides = []
+        override_dir = self.bundles_dir / bundle_name
+
+        if not override_dir.exists():
+            return overrides
+
+        # Check for public override
+        public_override = override_dir / relative_path
+        if public_override.exists() and public_override.is_file():
+            overrides.append(public_override)
+
+        # Check for private override
+        private_override = override_dir / f"{relative_path}.private"
+        if private_override.exists() and private_override.is_file():
+            overrides.append(private_override)
+
+        return overrides
+
+    def apply_override(
+        self, base_content: bytes, override_path: Path, filename: str
+    ) -> bytes:
+        """Apply override to base content."""
+        override_content = override_path.read_bytes()
+
+        # Smart merge for structured formats
+        if self._can_smart_merge(filename):
+            try:
+                return self._smart_merge(base_content, override_content, filename)
+            except Exception:
+                # Fall back to replacement on merge failure
+                pass
+
+        # Default: full replacement
+        return override_content
+
+    def _can_smart_merge(self, filename: str) -> bool:
+        """Check if file type supports smart merging."""
+        return filename.endswith((".toml", ".json"))
+
+    def _smart_merge(
+        self, base_content: bytes, override_content: bytes, filename: str
+    ) -> bytes:
+        """Perform smart merge based on file type."""
+        if filename.endswith(".toml"):
+            base_dict = load_toml_from_string(base_content.decode("utf-8"))
+            override_dict = load_toml_from_string(override_content.decode("utf-8"))
+            merged = deep_merge(base_dict, override_dict)
+            return dump_toml(merged).encode("utf-8")
+        elif filename.endswith(".json"):
+            base_dict = json.loads(base_content)
+            override_dict = json.loads(override_content)
+            merged = deep_merge(base_dict, override_dict)
+            return json.dumps(merged, indent=2).encode("utf-8")
+
+        return override_content
+
+
+# ============================================================================
+# Destinations
+# ============================================================================
+
+
+def load_destination_for_bundle(bundle_name: str, bundles_dir: Path | None = None) -> Destination | None:
+    """Load destination from bundle-specific destination.private file."""
+    bundles_dir = bundles_dir or BUNDLES_DIR
+    dest_file = bundles_dir / bundle_name / "destination.private"
+
+    if not dest_file.exists():
+        return None
+
+    data = load_toml(dest_file)
+    return Destination(
+        name=bundle_name,
+        target=data.get("target", ""),
+        ssh_opts=data.get("ssh_opts", ""),
+        default_bundle=bundle_name,
+    )
+
+
+# ============================================================================
+# Package Builder
+# ============================================================================
+
+
+class PackageBuilder:
+    """Builds the final package tarball."""
+
+    def __init__(self, bundle_name: str, config: BundleConfig, bundles_dir: Path | None = None, util_dir: Path | None = None):
+        self.bundle_name = bundle_name
+        self.config = config
+        self.bundles_dir = bundles_dir or BUNDLES_DIR
+        self.util_dir = util_dir or UTIL_DIR
+        self.override_manager = OverrideManager(self.bundles_dir)
+
+    def build(self, files: list[ResolvedFile], output_path: Path) -> Path:
+        """Build the tarball."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_dir = Path(temp_dir) / f"dotfiles-{self.bundle_name}"
+            package_dir.mkdir()
+
+            # Copy files with override application
+            for resolved in files:
+                self._copy_file(resolved, package_dir)
+
+            # Add util/ and install script if packages specified
+            if self.config.packages_install and self.util_dir.exists():
+                shutil.copytree(self.util_dir, package_dir / "util")
+                self._generate_install_script(package_dir)
+                self._generate_readme(package_dir)
+
+            # Create tarball
+            self._create_tarball(package_dir, output_path)
+
+        return output_path
+
+    def _copy_file(self, resolved: ResolvedFile, package_dir: Path):
+        """Copy a single file, applying overrides if present."""
+        dest_path = package_dir / resolved.relative_path
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check for overrides
+        overrides = self.override_manager.find_overrides(
+            self.bundle_name, resolved.relative_path
+        )
+
+        if overrides:
+            # Apply overrides
+            content = resolved.source_path.read_bytes()
+            for override_path in overrides:
+                content = self.override_manager.apply_override(
+                    content, override_path, resolved.relative_path
+                )
+            dest_path.write_bytes(content)
+        else:
+            # Direct copy
+            shutil.copy2(resolved.source_path, dest_path)
+
+    def _generate_install_script(self, package_dir: Path):
+        """Generate install-packages.sh script from package list."""
+        packages = self.config.packages_install
+        pkg_lines = "\n".join(f'pkg_install "{pkg}" ${{DRY_RUN}}' for pkg in packages)
+
+        script_content = f'''#!/usr/bin/env bash
+# Install packages for dotfiles bundle: {self.bundle_name}
+# This script uses the package manager abstraction from util/
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+
+# Parse arguments
+DRY_RUN=0
+if [ "$1" = "--dry-run" ]; then
+    DRY_RUN=1
+    echo "DRY RUN MODE - No packages will be installed"
+    echo ""
+fi
+
+# Source common utilities and OS detection
+source "$SCRIPT_DIR/util/common.sh"
+source "$SCRIPT_DIR/util/detect_os.sh"
+
+echo "Detected: $OS_TYPE"
+if [ -n "$DISTRO" ]; then
+    echo "Distribution: $DISTRO"
+fi
+echo ""
+echo "Installing packages..."
+echo ""
+
+{pkg_lines}
+
+echo ""
+if [ $DRY_RUN -eq 1 ]; then
+    echo "Dry run complete! Run without --dry-run to install packages."
+else
+    echo "Package installation complete!"
+fi
+'''
+        script_path = package_dir / "install-packages.sh"
+        script_path.write_text(script_content)
+        script_path.chmod(0o755)
+
+    def _generate_readme(self, package_dir: Path):
+        """Generate README.md."""
+        pkg_count = len(self.config.packages_install)
+        pkg_info = f"{pkg_count} packages" if pkg_count else "none"
+
+        readme_content = f"""# Dotfiles Bundle: {self.bundle_name}
+
+{self.config.description}
+
+## Quick Install
+
+```bash
+cd $HOME
+tar -xzf dotfiles-{self.bundle_name}.tar.gz --strip-components=1
+bash install-packages.sh
+rm install-packages.sh README.md
+rm -rf util/
+exec zsh -l
+```
+
+## What's Included
+
+This bundle was generated from the dotfiles repository with the following configuration:
+- Target platform: {self.config.target}
+- Packages: {pkg_info}
+"""
+        readme_path = package_dir / "README.md"
+        readme_path.write_text(readme_content)
+
+    def _create_tarball(self, package_dir: Path, output_path: Path):
+        """Create the tarball."""
+        # Set environment to avoid macOS extended attributes
+        env = os.environ.copy()
+        env["COPYFILE_DISABLE"] = "1"
+
+        with tarfile.open(output_path, "w:gz") as tar:
+            tar.add(package_dir, arcname=package_dir.name)
+
+
+# ============================================================================
+# Deployer
+# ============================================================================
+
+
+class Deployer:
+    """Handles deployment to remote destinations."""
+
+    def __init__(self, destination: Destination):
+        self.destination = destination
+
+    def preview(self, package_dir: Path) -> list[str]:
+        """Preview what would be changed using rsync dry-run."""
+        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+
+        cmd = [
+            "rsync",
+            "-avzn",  # archive, verbose, compress, dry-run
+            "--itemize-changes",
+            "--exclude=install-packages.sh",
+            "--exclude=README.md",
+            "--exclude=util/",
+        ]
+
+        if ssh_opts:
+            cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+
+        cmd.extend([
+            f"{package_dir}/",
+            self.destination.target,
+        ])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Parse itemized output for changed files
+        changes = []
+        for line in result.stdout.strip().split("\n"):
+            if line and not line.startswith("sending") and not line.startswith("total"):
+                # Extract filename from itemized output
+                parts = line.split(" ", 1)
+                if len(parts) > 1:
+                    changes.append(parts[1])
+                elif line.strip():
+                    changes.append(line.strip())
+
+        return [c for c in changes if c and not c.endswith("/")]
+
+    def deploy(self, package_dir: Path) -> bool:
+        """Deploy to destination."""
+        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+
+        cmd = [
+            "rsync",
+            "-avz",  # archive, verbose, compress
+            "--exclude=install-packages.sh",
+            "--exclude=README.md",
+            "--exclude=util/",
+        ]
+
+        if ssh_opts:
+            cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+
+        cmd.extend([
+            f"{package_dir}/",
+            self.destination.target,
+        ])
+
+        result = subprocess.run(cmd)
+        return result.returncode == 0
+
+
+# ============================================================================
+# Commands
+# ============================================================================
+
+
+def cmd_list(args):
+    """List available bundles and their destinations."""
+    resolver = BundleResolver()
+    bundles = resolver.list_bundles()
+
+    header("Available bundles:")
+    if bundles:
+        for bundle in bundles:
+            extends_info = f" (extends: {bundle.extends})" if bundle.extends else ""
+            target_info = f" [{bundle.target}]" if bundle.target != "any" else ""
+
+            # Check if destination is configured
+            dest = load_destination_for_bundle(bundle.name)
+            dest_info = f" -> {dest.target}" if dest else " (no destination)"
+
+            info(f"{bundle.name:<12} {bundle.description}{extends_info}{target_info}{dest_info}")
+    else:
+        info("No bundles found. Create bundles/<name>/bundle.toml")
+    print()
+
+
+def cmd_show(args):
+    """Show what a bundle includes."""
+    resolver = BundleResolver()
+    config = resolver.resolve(args.name)
+
+    file_resolver = FileResolver()
+    files = file_resolver.resolve_bundle(config)
+
+    print(f"\nBundle: {config.name}")
+    print(f"Description: {config.description}")
+    if config.extends:
+        print(f"Extends: {config.extends}")
+    print(f"Target: {config.target}")
+    print(f"Packages: {len(config.packages_install)} packages")
+
+    # Group by source type
+    by_source = defaultdict(list)
+    for f in files:
+        by_source[f.source_type].append(f)
+
+    for source_type in ["links", "links-in-depth", "runtime"]:
+        if source_type in by_source:
+            header(f"{source_type.upper()} ({len(by_source[source_type])} files):")
+            for f in sorted(by_source[source_type], key=lambda x: x.relative_path)[:15]:
+                info(f.relative_path)
+            if len(by_source[source_type]) > 15:
+                info(f"... and {len(by_source[source_type]) - 15} more")
+
+    # Check for overrides
+    override_dir = BUNDLES_DIR / args.name
+    if override_dir.exists() and any(override_dir.iterdir()):
+        header("Overrides:")
+        for override_file in sorted(override_dir.rglob("*")):
+            if override_file.is_file():
+                rel = override_file.relative_to(override_dir)
+                private_marker = " (private)" if str(rel).endswith(".private") else ""
+                info(f"{rel}{private_marker}")
+    print()
+
+
+def cmd_build(args):
+    """Build bundle to tarball."""
+    bundle_name = args.name
+    output = Path(args.output) if args.output else Path(f"/tmp/dotfiles-{bundle_name}.tar.gz")
+
+    print(f"\nBuilding bundle: {bundle_name}")
+
+    resolver = BundleResolver()
+    config = resolver.resolve(bundle_name)
+
+    file_resolver = FileResolver()
+    files = file_resolver.resolve_bundle(config)
+
+    info(f"Resolved {len(files)} files")
+    info(f"Target platform: {config.target}")
+
+    builder = PackageBuilder(bundle_name, config)
+    builder.build(files, output)
+
+    size = output.stat().st_size
+    print(f"\nBuilt: {output} ({format_size(size)})")
+
+
+def cmd_deploy(args):
+    """Build and deploy bundle to destination."""
+    bundle_name = args.name
+
+    # Load destination for this bundle
+    dest = load_destination_for_bundle(bundle_name)
+
+    if not dest:
+        die(
+            f"No destination configured for bundle '{bundle_name}'.\n"
+            f"Create bundles/{bundle_name}/destination.private with:\n"
+            f"  target = \"user@host:~\"\n"
+            f"  ssh_opts = \"\"  # optional"
+        )
+
+    print(f"\nBuilding bundle: {bundle_name}")
+    print(f"Destination: {dest.target}")
+
+    # Build
+    resolver = BundleResolver()
+    config = resolver.resolve(bundle_name)
+
+    file_resolver = FileResolver()
+    files = file_resolver.resolve_bundle(config)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        package_dir = Path(temp_dir) / f"dotfiles-{bundle_name}"
+        package_dir.mkdir()
+
+        # Build package in temp directory
+        builder = PackageBuilder(bundle_name, config)
+        for resolved in files:
+            builder._copy_file(resolved, package_dir)
+
+        if config.packages_install and UTIL_DIR.exists():
+            shutil.copytree(UTIL_DIR, package_dir / "util")
+            builder._generate_install_script(package_dir)
+            builder._generate_readme(package_dir)
+
+        # Preview with rsync dry-run
+        deployer = Deployer(dest)
+
+        header("Preview (rsync --dry-run):")
+        changes = deployer.preview(package_dir)
+
+        if not changes:
+            print("No changes to deploy.")
+            return
+
+        for change in changes[:20]:
+            info(change)
+        if len(changes) > 20:
+            info(f"... and {len(changes) - 20} more")
+
+        print(f"\n{len(changes)} files will be synced to {dest.target}")
+
+        # Confirm
+        if args.yes:
+            proceed = True
+        else:
+            response = input("\nProceed? [y/N]: ").strip().lower()
+            proceed = response == "y"
+
+        if proceed:
+            print("\nDeploying...")
+            if deployer.deploy(package_dir):
+                print("Deployment complete!")
+            else:
+                die("Deployment failed")
+        else:
+            print("Aborted.")
+
+
+def cmd_pull(args):
+    """Sync changes FROM server back to local."""
+    print("Pull command not yet implemented.")
+    print("This will sync changes from the remote server back to your local overrides.")
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bundle management for dotfiles deployment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # list
+    p_list = subparsers.add_parser("list", help="List available bundles")
+    p_list.set_defaults(func=cmd_list)
+
+    # show
+    p_show = subparsers.add_parser("show", help="Show bundle contents")
+    p_show.add_argument("name", help="Bundle name")
+    p_show.set_defaults(func=cmd_show)
+
+    # build
+    p_build = subparsers.add_parser("build", help="Build bundle tarball")
+    p_build.add_argument("name", help="Bundle name")
+    p_build.add_argument("-o", "--output", help="Output path")
+    p_build.set_defaults(func=cmd_build)
+
+    # deploy
+    p_deploy = subparsers.add_parser("deploy", help="Build and deploy")
+    p_deploy.add_argument("name", help="Bundle name")
+    p_deploy.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_deploy.set_defaults(func=cmd_deploy)
+
+    # pull
+    p_pull = subparsers.add_parser("pull", help="Sync changes from remote")
+    p_pull.add_argument("name", help="Bundle name")
+    p_pull.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_pull.set_defaults(func=cmd_pull)
+
+    args = parser.parse_args()
+
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        print("\nAborted.", file=sys.stderr)
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

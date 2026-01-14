@@ -1,0 +1,53 @@
+[bundle]
+name = "base"
+description = "Minimal shell configuration for any system"
+target = "any"
+
+[files]
+include = [
+    ".aliases",
+    ".bin/",
+    ".env.d/common/",
+    ".gitconfig",
+    ".gitignore_global",
+    ".tmux.conf",
+    ".vimrc",
+    ".zshenv",
+    ".zshrc",
+]
+exclude = [
+    ".bin/bootstrap_wh_*",
+    ".bin/start_*",
+    ".bin/stop_*",
+    ".bin/toggle-*.sh",
+    ".bin/window_reorg.sh",
+]
+
+[runtime]
+include = [
+    ".tmux/plugins/",
+    ".zsh/plugins/",
+]
+exclude = [
+    "**/.git/",
+    "**/.github/",
+    "**/test/",
+    "**/tests/",
+]
+
+[packages]
+install = [
+    "autojump",
+    "delta",
+    "fzf",
+    "git",
+    "htop",
+    "jq",
+    "rsync",
+    "starship",
+    "tmux",
+    "tree",
+    "vim",
+    "zsh",
+    "zsh-syntax-highlighting",
+]

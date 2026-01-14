@@ -1,0 +1,9 @@
+# Destination configuration for the NAS bundle
+# Copy this file to destination.private and configure your target
+# destination.private is gitignored and will not be committed
+
+# SSH target (user@host:path)
+target = "admin@192.168.1.50:~"
+
+# Optional SSH options (e.g., port, identity file)
+ssh_opts = "-p 2222"

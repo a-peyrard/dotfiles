@@ -1,0 +1,9 @@
+# Destination configuration for the server bundle
+# Copy this file to destination.private and configure your target
+# destination.private is gitignored and will not be committed
+
+# SSH target (user@host:path)
+target = "augustin@devserver.internal:~"
+
+# Optional SSH options (e.g., port, identity file)
+ssh_opts = ""
