@@ -1210,8 +1210,17 @@ def cmd_deploy(args):
             builder._generate_install_script(package_dir)
             builder._generate_readme(package_dir)
 
-        # Preview with rsync dry-run
+        # Preview with rsync dry-run (skip if --yes to avoid double auth)
         deployer = Deployer(dest)
+
+        if args.yes:
+            # Skip preview, deploy directly
+            print("\nDeploying...")
+            if deployer.deploy(package_dir):
+                print("Deployment complete!")
+            else:
+                die("Deployment failed")
+            return
 
         header("Preview (rsync --dry-run):")
         changes, unchanged = deployer.preview(package_dir)
@@ -1245,14 +1254,9 @@ def cmd_deploy(args):
             print("\nDry-run complete. No changes were made.")
             return
 
-        # Confirm
-        if args.yes:
-            proceed = True
-        else:
-            response = input("\nProceed? [y/N]: ").strip().lower()
-            proceed = response == "y"
-
-        if proceed:
+        # Confirm (--yes already handled above with early return)
+        response = input("\nProceed? [y/N]: ").strip().lower()
+        if response == "y":
             print("\nDeploying...")
             if deployer.deploy(package_dir):
                 print("Deployment complete!")
@@ -1302,7 +1306,7 @@ def main():
     p_deploy.add_argument("name", help="Bundle name")
     p_deploy.add_argument("-n", "--dry-run", action="store_true", help="Preview only, don't prompt or deploy")
     p_deploy.add_argument("-v", "--verbose", action="store_true", help="Show all files, not just first 20")
-    p_deploy.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_deploy.add_argument("-y", "--yes", action="store_true", help="Skip preview and confirmation, deploy directly")
     p_deploy.set_defaults(func=cmd_deploy)
 
     # pull
