@@ -100,6 +100,18 @@ def _dump_toml_section(data: dict, path: list[str], lines: list[str]):
 # ============================================================================
 
 
+class Color:
+    """ANSI color codes for terminal output."""
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+
+
 def die(message: str, code: int = 1) -> NoReturn:
     """Print error message and exit."""
     print(f"Error: {message}", file=sys.stderr)
@@ -118,11 +130,12 @@ def header(message: str):
 
 def format_size(size: int) -> str:
     """Format file size in human-readable format."""
+    fsize: float = float(size)
     for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}TB"
+        if fsize < 1024:
+            return f"{fsize:.1f}{unit}"
+        fsize /= 1024
+    return f"{fsize:.1f}TB"
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -244,6 +257,27 @@ class ResolvedFile:
     source_path: Path  # Absolute path to source
     relative_path: str  # Path relative to $HOME in package
     source_type: str  # 'links', 'links-in-depth', 'runtime', 'override'
+
+
+@dataclass
+class Override:
+    """A parsed override file."""
+
+    path: Path  # Full path to override file
+    target: str  # Target filename (e.g., ".zshrc")
+    mode: str  # "prepend", "append", "merge", "replace", "add"
+    order: int  # Order for sorting (default 0)
+    private: bool  # Is this a private override?
+
+
+@dataclass
+class BundleAddition:
+    """A file or directory to add to the bundle (no base file required)."""
+
+    source_path: Path  # Full path to source file/directory
+    target_path: str  # Target relative path (with .add stripped)
+    is_directory: bool  # Whether this is a directory addition
+    private: bool  # Is this a private addition?
 
 
 # ============================================================================
@@ -495,47 +529,221 @@ class FileResolver:
 
 
 class OverrideManager:
-    """Manages bundle-specific file overrides."""
+    """Manages bundle-specific file overrides.
+
+    Override filename patterns:
+        <filename>.<mode>                    - e.g., .zshrc.prepend
+        <filename>.<mode>.<order>            - e.g., .zshrc.prepend.0
+        <filename>.<mode>.private            - e.g., .zshrc.prepend.private
+        <filename>.<mode>.<order>.private    - e.g., .zshrc.prepend.0.private
+
+    Modes:
+        prepend - add content at the start of the file
+        append  - add content at the end of the file
+        merge   - deep merge (for TOML/JSON files)
+        replace - full replacement
+        add     - bundle-only file (no base file required)
+
+    Directory additions:
+        <dirname>.add/                       - e.g., .config/my-tool.add/
+        All contents inside are copied, stripping the .add suffix from the directory name.
+    """
+
+    MODES = {"prepend", "append", "merge", "replace", "add"}
 
     def __init__(self, bundles_dir: Path | None = None):
         self.bundles_dir = bundles_dir or BUNDLES_DIR
 
-    def find_overrides(self, bundle_name: str, relative_path: str) -> list[Path]:
-        """Find override chain for a file (public + private)."""
-        overrides = []
+    def find_overrides(self, bundle_name: str, relative_path: str) -> list[Override]:
+        """Find all overrides for a file, sorted by mode and order."""
+        overrides: list[Override] = []
         override_dir = self.bundles_dir / bundle_name
 
         if not override_dir.exists():
             return overrides
 
-        # Check for public override
-        public_override = override_dir / relative_path
-        if public_override.exists() and public_override.is_file():
-            overrides.append(public_override)
+        # Get the base filename to match against
+        target_path = Path(relative_path)
 
-        # Check for private override
-        private_override = override_dir / f"{relative_path}.private"
-        if private_override.exists() and private_override.is_file():
-            overrides.append(private_override)
+        # Scan bundle directory for matching override files
+        for override_file in override_dir.rglob("*"):
+            if not override_file.is_file():
+                continue
+
+            # Skip special files
+            if override_file.name in ("bundle.toml", "destination.private", "destination.private.example"):
+                continue
+
+            parsed = self._parse_override_filename(override_file, override_dir, relative_path)
+            if parsed:
+                overrides.append(parsed)
+
+        # Sort: prepends first, then merge/replace, then appends
+        # Within each mode, sort by order, then by private (public first)
+        mode_order = {"prepend": 0, "merge": 1, "replace": 1, "append": 2, "add": 1}
+        overrides.sort(key=lambda o: (mode_order[o.mode], o.order, o.private))
 
         return overrides
 
-    def apply_override(
-        self, base_content: bytes, override_path: Path, filename: str
-    ) -> bytes:
-        """Apply override to base content."""
-        override_content = override_path.read_bytes()
+    def find_additions(self, bundle_name: str) -> list[BundleAddition]:
+        """Find all bundle-only files and directories (with .add suffix).
 
-        # Smart merge for structured formats
-        if self._can_smart_merge(filename):
-            try:
-                return self._smart_merge(base_content, override_content, filename)
-            except Exception:
-                # Fall back to replacement on merge failure
-                pass
+        This finds:
+        - Files ending with .add or .add.private (e.g., .my-config.add)
+        - Directories ending with .add (e.g., .config/my-tool.add/)
 
-        # Default: full replacement
-        return override_content
+        Returns list of BundleAddition objects with target paths having .add stripped.
+        """
+        additions: list[BundleAddition] = []
+        override_dir = self.bundles_dir / bundle_name
+
+        if not override_dir.exists():
+            return additions
+
+        # Track directories we've already processed to avoid duplicates
+        processed_dirs: set[Path] = set()
+
+        # First, find directories with .add suffix
+        for item in override_dir.rglob("*.add"):
+            if item.is_dir() and item not in processed_dirs:
+                processed_dirs.add(item)
+                rel_path = str(item.relative_to(override_dir))
+                # Strip .add suffix from target path
+                target_path = rel_path[:-4]  # Remove ".add"
+                additions.append(BundleAddition(
+                    source_path=item,
+                    target_path=target_path,
+                    is_directory=True,
+                    private=False,
+                ))
+
+        # Find .add.private files (single files)
+        for item in override_dir.rglob("*.add.private"):
+            if item.is_file():
+                # Check if this file is inside a .add directory (skip if so)
+                if any(p in processed_dirs for p in item.parents):
+                    continue
+                rel_path = str(item.relative_to(override_dir))
+                # Strip .add.private suffix from target path
+                target_path = rel_path[:-12]  # Remove ".add.private"
+                additions.append(BundleAddition(
+                    source_path=item,
+                    target_path=target_path,
+                    is_directory=False,
+                    private=True,
+                ))
+
+        # Find .add files (single files, not directories)
+        for item in override_dir.rglob("*.add"):
+            if item.is_file():
+                # Check if this file is inside a .add directory (skip if so)
+                if any(p in processed_dirs for p in item.parents):
+                    continue
+                rel_path = str(item.relative_to(override_dir))
+                # Strip .add suffix from target path
+                target_path = rel_path[:-4]  # Remove ".add"
+                additions.append(BundleAddition(
+                    source_path=item,
+                    target_path=target_path,
+                    is_directory=False,
+                    private=False,
+                ))
+
+        return additions
+
+    def _parse_override_filename(
+        self, override_file: Path, override_dir: Path, target_relative_path: str
+    ) -> Override | None:
+        """Parse an override filename and check if it matches the target file."""
+        # Get the relative path of the override file within the bundle directory
+        try:
+            override_rel = override_file.relative_to(override_dir)
+        except ValueError:
+            return None
+
+        override_str = str(override_rel)
+
+        # Check for .private suffix
+        private = override_str.endswith(".private")
+        if private:
+            override_str = override_str[:-8]  # Remove ".private"
+
+        # Try to parse mode and order from the end
+        parts = override_str.rsplit(".", 2)
+
+        mode = None
+        order = 0
+        base_path = override_str
+
+        if len(parts) >= 2:
+            last_part = parts[-1]
+
+            # Check if last part is a mode
+            if last_part in self.MODES:
+                mode = last_part
+                base_path = override_str[: -(len(last_part) + 1)]
+            # Check if last part is a number (order)
+            elif last_part.isdigit() and len(parts) >= 3:
+                potential_mode = parts[-2]
+                if potential_mode in self.MODES:
+                    mode = potential_mode
+                    order = int(last_part)
+                    base_path = ".".join(parts[:-2])
+
+        # If no mode found, skip this file (not an override)
+        if mode is None:
+            return None
+
+        # Check if base path matches the target
+        if base_path != target_relative_path:
+            return None
+
+        return Override(
+            path=override_file,
+            target=target_relative_path,
+            mode=mode,
+            order=order,
+            private=private,
+        )
+
+    def apply_overrides(self, base_content: bytes, overrides: list[Override], filename: str) -> bytes:
+        """Apply all overrides to base content."""
+        if not overrides:
+            return base_content
+
+        result = base_content
+
+        for override in overrides:
+            result = self._apply_single_override(result, override, filename)
+
+        return result
+
+    def _apply_single_override(self, base_content: bytes, override: Override, filename: str) -> bytes:
+        """Apply a single override to content."""
+        override_content = override.path.read_bytes()
+
+        if override.mode == "prepend":
+            # Add override content at the start
+            return override_content.rstrip() + b"\n\n" + base_content
+
+        elif override.mode == "append":
+            # Add override content at the end
+            return base_content.rstrip() + b"\n\n" + override_content
+
+        elif override.mode == "merge":
+            # Smart merge for structured formats
+            if self._can_smart_merge(filename):
+                try:
+                    return self._smart_merge(base_content, override_content, filename)
+                except Exception:
+                    pass
+            # Fall through to replace if merge not possible
+            return override_content
+
+        elif override.mode == "replace":
+            return override_content
+
+        return base_content
 
     def _can_smart_merge(self, filename: str) -> bool:
         """Check if file type supports smart merging."""
@@ -557,6 +765,24 @@ class OverrideManager:
             return json.dumps(merged, indent=2).encode("utf-8")
 
         return override_content
+
+    # Legacy method for backwards compatibility
+    def apply_override(
+        self, base_content: bytes, override_path: Path, filename: str
+    ) -> bytes:
+        """Apply a single override (legacy method)."""
+        # Create a temporary Override object for the legacy call
+        override = Override(
+            path=override_path,
+            target=filename,
+            mode="replace",
+            order=0,
+            private=override_path.suffix == ".private",
+        )
+        # Detect mode from filename
+        if ".merge" in str(override_path) or self._can_smart_merge(filename):
+            override.mode = "merge"
+        return self._apply_single_override(base_content, override, filename)
 
 
 # ============================================================================
@@ -606,6 +832,9 @@ class PackageBuilder:
             for resolved in files:
                 self._copy_file(resolved, package_dir)
 
+            # Copy bundle-only additions (.add files and directories)
+            self._copy_additions(package_dir)
+
             # Add util/ and install script if packages specified
             if self.config.packages_install and self.util_dir.exists():
                 shutil.copytree(self.util_dir, package_dir / "util")
@@ -628,16 +857,39 @@ class PackageBuilder:
         )
 
         if overrides:
-            # Apply overrides
+            # Apply all overrides
             content = resolved.source_path.read_bytes()
-            for override_path in overrides:
-                content = self.override_manager.apply_override(
-                    content, override_path, resolved.relative_path
-                )
+            content = self.override_manager.apply_overrides(
+                content, overrides, resolved.relative_path
+            )
             dest_path.write_bytes(content)
         else:
             # Direct copy
             shutil.copy2(resolved.source_path, dest_path)
+
+    def _copy_additions(self, package_dir: Path):
+        """Copy bundle-only files and directories (.add suffix)."""
+        additions = self.override_manager.find_additions(self.bundle_name)
+
+        for addition in additions:
+            dest_path = package_dir / addition.target_path
+
+            if addition.is_directory:
+                # Copy entire directory tree
+                if dest_path.exists():
+                    # Merge with existing directory
+                    for src_file in addition.source_path.rglob("*"):
+                        if src_file.is_file():
+                            rel = src_file.relative_to(addition.source_path)
+                            file_dest = dest_path / rel
+                            file_dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src_file, file_dest)
+                else:
+                    shutil.copytree(addition.source_path, dest_path)
+            else:
+                # Copy single file
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(addition.source_path, dest_path)
 
     def _generate_install_script(self, package_dir: Path):
         """Generate install-packages.sh script from package list."""
@@ -735,13 +987,17 @@ class Deployer:
     def __init__(self, destination: Destination):
         self.destination = destination
 
-    def preview(self, package_dir: Path) -> list[str]:
-        """Preview what would be changed using rsync dry-run."""
+    def preview(self, package_dir: Path) -> tuple[list[str], list[str]]:
+        """Preview what would be changed using rsync dry-run.
+
+        Returns:
+            Tuple of (changed_files, unchanged_files)
+        """
         ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
 
         cmd = [
             "rsync",
-            "-avzn",  # archive, verbose, compress, dry-run
+            "-avzcn",  # archive, verbose, compress, checksum, dry-run
             "--itemize-changes",
             "--exclude=install-packages.sh",
             "--exclude=README.md",
@@ -759,17 +1015,29 @@ class Deployer:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         # Parse itemized output for changed files
+        # Format: YXcstpoguax where Y indicates transfer type
+        # '>' = sending, '<' = receiving, 'c' = creating, '.' = no update
         changes = []
+        unchanged = []
         for line in result.stdout.strip().split("\n"):
-            if line and not line.startswith("sending") and not line.startswith("total"):
-                # Extract filename from itemized output
-                parts = line.split(" ", 1)
-                if len(parts) > 1:
-                    changes.append(parts[1])
-                elif line.strip():
-                    changes.append(line.strip())
+            if not line or line.startswith("sending") or line.startswith("total"):
+                continue
 
-        return [c for c in changes if c and not c.endswith("/")]
+            parts = line.split(" ", 1)
+            if len(parts) < 2:
+                continue
+
+            filename = parts[1]
+            if filename.endswith("/"):
+                continue
+
+            # First char indicates transfer type
+            if line[0] in ">c*<":
+                changes.append(filename)
+            elif line[0] == ".":
+                unchanged.append(filename)
+
+        return changes, unchanged
 
     def deploy(self, package_dir: Path) -> bool:
         """Deploy to destination."""
@@ -777,7 +1045,7 @@ class Deployer:
 
         cmd = [
             "rsync",
-            "-avz",  # archive, verbose, compress
+            "-avzc",  # archive, verbose, compress, checksum
             "--exclude=install-packages.sh",
             "--exclude=README.md",
             "--exclude=util/",
@@ -829,12 +1097,23 @@ def cmd_show(args):
     file_resolver = FileResolver()
     files = file_resolver.resolve_bundle(config)
 
-    print(f"\nBundle: {config.name}")
-    print(f"Description: {config.description}")
+    # Load destination
+    dest = load_destination_for_bundle(args.name)
+
+    # Header info
+    print(f"\n{Color.BOLD}Bundle:{Color.RESET} {Color.CYAN}{config.name}{Color.RESET}")
+    print(f"{Color.BOLD}Description:{Color.RESET} {config.description}")
     if config.extends:
-        print(f"Extends: {config.extends}")
-    print(f"Target: {config.target}")
-    print(f"Packages: {len(config.packages_install)} packages")
+        print(f"{Color.BOLD}Extends:{Color.RESET} {config.extends}")
+    print(f"{Color.BOLD}Target:{Color.RESET} {Color.YELLOW}{config.target}{Color.RESET}")
+    if dest:
+        print(f"{Color.BOLD}Destination:{Color.RESET} {Color.GREEN}{dest.target}{Color.RESET}")
+    else:
+        print(f"{Color.BOLD}Destination:{Color.RESET} {Color.DIM}(not configured){Color.RESET}")
+    print(f"{Color.BOLD}Packages:{Color.RESET} {len(config.packages_install)} packages")
+
+    # Limit for non-verbose mode
+    limit = None if args.verbose else 15
 
     # Group by source type
     by_source = defaultdict(list)
@@ -843,21 +1122,26 @@ def cmd_show(args):
 
     for source_type in ["links", "links-in-depth", "runtime"]:
         if source_type in by_source:
-            header(f"{source_type.upper()} ({len(by_source[source_type])} files):")
-            for f in sorted(by_source[source_type], key=lambda x: x.relative_path)[:15]:
+            header(f"{Color.MAGENTA}{source_type.upper()}{Color.RESET} ({len(by_source[source_type])} files):")
+            sorted_files = sorted(by_source[source_type], key=lambda x: x.relative_path)
+            display_files = sorted_files if limit is None else sorted_files[:limit]
+            for f in display_files:
                 info(f.relative_path)
-            if len(by_source[source_type]) > 15:
-                info(f"... and {len(by_source[source_type]) - 15} more")
+            if limit and len(by_source[source_type]) > limit:
+                info(f"{Color.DIM}... and {len(by_source[source_type]) - limit} more (use -v for all){Color.RESET}")
 
     # Check for overrides
     override_dir = BUNDLES_DIR / args.name
     if override_dir.exists() and any(override_dir.iterdir()):
-        header("Overrides:")
+        header(f"{Color.MAGENTA}OVERRIDES:{Color.RESET}")
+        skip_files = {"bundle.toml", "destination.private", "destination.private.example"}
         for override_file in sorted(override_dir.rglob("*")):
-            if override_file.is_file():
+            if override_file.is_file() and override_file.name not in skip_files:
                 rel = override_file.relative_to(override_dir)
-                private_marker = " (private)" if str(rel).endswith(".private") else ""
-                info(f"{rel}{private_marker}")
+                if str(rel).endswith(".private"):
+                    info(f"{Color.YELLOW}{rel}{Color.RESET} {Color.DIM}(private){Color.RESET}")
+                else:
+                    info(f"{Color.GREEN}{rel}{Color.RESET}")
     print()
 
 
@@ -918,6 +1202,9 @@ def cmd_deploy(args):
         for resolved in files:
             builder._copy_file(resolved, package_dir)
 
+        # Copy additions
+        builder._copy_additions(package_dir)
+
         if config.packages_install and UTIL_DIR.exists():
             shutil.copytree(UTIL_DIR, package_dir / "util")
             builder._generate_install_script(package_dir)
@@ -927,18 +1214,36 @@ def cmd_deploy(args):
         deployer = Deployer(dest)
 
         header("Preview (rsync --dry-run):")
-        changes = deployer.preview(package_dir)
+        changes, unchanged = deployer.preview(package_dir)
 
         if not changes:
-            print("No changes to deploy.")
+            print(f"No changes to deploy. ({len(unchanged)} files already up to date)")
             return
 
-        for change in changes[:20]:
-            info(change)
-        if len(changes) > 20:
-            info(f"... and {len(changes) - 20} more")
+        # Show unchanged summary first
+        if unchanged:
+            print(f"{len(unchanged)} files unchanged", end="")
+            if args.verbose:
+                print(":")
+                for f in unchanged:
+                    print(f"  (=) {f}")
+            else:
+                print()
+            print()
+
+        # Show changes
+        print(f"{len(changes)} files to sync:")
+        for change in changes[:20] if not args.verbose else changes:
+            info(f"  {change}")
+        if len(changes) > 20 and not args.verbose:
+            info(f"  ... and {len(changes) - 20} more")
 
         print(f"\n{len(changes)} files will be synced to {dest.target}")
+
+        # Dry-run mode: exit after preview
+        if args.dry_run:
+            print("\nDry-run complete. No changes were made.")
+            return
 
         # Confirm
         if args.yes:
@@ -983,6 +1288,7 @@ def main():
     # show
     p_show = subparsers.add_parser("show", help="Show bundle contents")
     p_show.add_argument("name", help="Bundle name")
+    p_show.add_argument("-v", "--verbose", action="store_true", help="Show all files, not just first 15")
     p_show.set_defaults(func=cmd_show)
 
     # build
@@ -994,6 +1300,8 @@ def main():
     # deploy
     p_deploy = subparsers.add_parser("deploy", help="Build and deploy")
     p_deploy.add_argument("name", help="Bundle name")
+    p_deploy.add_argument("-n", "--dry-run", action="store_true", help="Preview only, don't prompt or deploy")
+    p_deploy.add_argument("-v", "--verbose", action="store_true", help="Show all files, not just first 20")
     p_deploy.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
     p_deploy.set_defaults(func=cmd_deploy)
 

@@ -94,12 +94,46 @@ class MockDotfilesRepo:
         bundle_path.write_text(content)
         return bundle_path
 
-    def create_override(self, bundle_name: str, relative_path: str, content: str) -> Path:
-        """Create an override file for a bundle (directly in bundle directory)."""
-        override_path = self.bundles_dir / bundle_name / relative_path
+    def create_override(self, bundle_name: str, relative_path: str, content: str, mode: str = "replace") -> Path:
+        """Create an override file for a bundle.
+
+        The relative_path is the target file (e.g., ".gitconfig").
+        The mode is appended to create the override filename (e.g., ".gitconfig.replace").
+        """
+        # Build override filename: <target>.<mode> or <target>.<mode>.private
+        if relative_path.endswith(".private"):
+            base_path = relative_path[:-8]  # Remove .private
+            override_filename = f"{base_path}.{mode}.private"
+        else:
+            override_filename = f"{relative_path}.{mode}"
+
+        override_path = self.bundles_dir / bundle_name / override_filename
         override_path.parent.mkdir(parents=True, exist_ok=True)
         override_path.write_text(content)
         return override_path
+
+    def create_addition(self, bundle_name: str, target_path: str, content: str | None = None, private: bool = False) -> Path:
+        """Create a bundle-only file (.add suffix) or directory.
+
+        Args:
+            bundle_name: Name of the bundle
+            target_path: Target path in the package (e.g., ".my-config" or ".config/my-tool/")
+            content: Content for the file. If None, creates a directory.
+            private: Whether this is a private addition
+        """
+        suffix = ".add.private" if private else ".add"
+
+        if content is not None:
+            # Create a file
+            addition_path = self.bundles_dir / bundle_name / f"{target_path}{suffix}"
+            addition_path.parent.mkdir(parents=True, exist_ok=True)
+            addition_path.write_text(content)
+        else:
+            # Create a directory
+            addition_path = self.bundles_dir / bundle_name / f"{target_path}{suffix}"
+            addition_path.mkdir(parents=True, exist_ok=True)
+
+        return addition_path
 
     def create_runtime_file(self, relative_path: str, content: str = "") -> Path:
         """Create a file in the mock home directory (for runtime files)."""
@@ -571,7 +605,9 @@ class TestOverrideManager:
 
         # THEN
         assert len(overrides) == 1
-        assert overrides[0].name == ".gitconfig"
+        assert overrides[0].target == ".gitconfig"
+        assert overrides[0].mode == "replace"
+        assert overrides[0].private is False
 
     def test_override_manager_should_find_private_override(self, mock_repo: MockDotfilesRepo):
         # GIVEN
@@ -583,7 +619,9 @@ class TestOverrideManager:
 
         # THEN
         assert len(overrides) == 1
-        assert overrides[0].name == ".gitconfig.private"
+        assert overrides[0].target == ".gitconfig"
+        assert overrides[0].mode == "replace"
+        assert overrides[0].private is True
 
     def test_override_manager_should_find_both_public_and_private(
         self, mock_repo: MockDotfilesRepo
@@ -630,6 +668,68 @@ class TestOverrideManager:
             "user": {"name": "John", "email": "john@work.com"},
             "theme": "dark",
         }
+
+    def test_override_manager_should_find_nested_override(self, mock_repo: MockDotfilesRepo):
+        # GIVEN - nested override in .config/nvim/
+        bundle_dir = mock_repo.bundles_dir / "server"
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        nested_override = bundle_dir / ".config" / "nvim" / "init.lua.append"
+        nested_override.parent.mkdir(parents=True, exist_ok=True)
+        nested_override.write_text("-- appended content")
+        manager = OverrideManager(mock_repo.bundles_dir)
+
+        # WHEN
+        overrides = manager.find_overrides("server", ".config/nvim/init.lua")
+
+        # THEN
+        assert len(overrides) == 1
+        assert overrides[0].target == ".config/nvim/init.lua"
+        assert overrides[0].mode == "append"
+
+    def test_override_manager_should_find_addition_file(self, mock_repo: MockDotfilesRepo):
+        # GIVEN
+        mock_repo.create_addition("server", ".my-config", "config content")
+        manager = OverrideManager(mock_repo.bundles_dir)
+
+        # WHEN
+        additions = manager.find_additions("server")
+
+        # THEN
+        assert len(additions) == 1
+        assert additions[0].target_path == ".my-config"
+        assert additions[0].is_directory is False
+        assert additions[0].private is False
+
+    def test_override_manager_should_find_addition_directory(self, mock_repo: MockDotfilesRepo):
+        # GIVEN
+        add_dir = mock_repo.create_addition("server", ".config/my-tool", content=None)
+        # Add some files inside the directory
+        (add_dir / "config.toml").write_text("# config")
+        (add_dir / "themes" / "dark.toml").parent.mkdir(parents=True)
+        (add_dir / "themes" / "dark.toml").write_text("# dark theme")
+        manager = OverrideManager(mock_repo.bundles_dir)
+
+        # WHEN
+        additions = manager.find_additions("server")
+
+        # THEN
+        assert len(additions) == 1
+        assert additions[0].target_path == ".config/my-tool"
+        assert additions[0].is_directory is True
+        assert additions[0].private is False
+
+    def test_override_manager_should_find_private_addition(self, mock_repo: MockDotfilesRepo):
+        # GIVEN
+        mock_repo.create_addition("server", ".secrets", "secret content", private=True)
+        manager = OverrideManager(mock_repo.bundles_dir)
+
+        # WHEN
+        additions = manager.find_additions("server")
+
+        # THEN
+        assert len(additions) == 1
+        assert additions[0].target_path == ".secrets"
+        assert additions[0].private is True
 
 
 # ============================================================================
@@ -744,6 +844,80 @@ class TestPackageBuilder:
             assert any("install-packages.sh" in n for n in names)
             assert any("README.md" in n for n in names)
             assert any("util" in n for n in names)
+
+    def test_package_builder_should_copy_addition_files(self, mock_repo: MockDotfilesRepo):
+        # GIVEN
+        mock_repo.create_file(".zshrc", "# zshrc")
+        mock_repo.create_addition("test", ".my-bundle-only-config", "bundle only content")
+        mock_repo.create_util()
+
+        config = BundleConfig(name="test", packages_install=[])
+        files = [
+            ResolvedFile(
+                source_path=mock_repo.links_dir / ".zshrc",
+                relative_path=".zshrc",
+                source_type="links",
+            ),
+        ]
+        builder = PackageBuilder(
+            "test",
+            config,
+            bundles_dir=mock_repo.bundles_dir,
+            util_dir=mock_repo.util_dir,
+        )
+        output_path = mock_repo.root / "output.tar.gz"
+
+        # WHEN
+        builder.build(files, output_path)
+
+        # THEN
+        with tarfile.open(output_path, "r:gz") as tar:
+            names = tar.getnames()
+            assert any(".my-bundle-only-config" in n for n in names)
+            for member in tar.getmembers():
+                if member.name.endswith(".my-bundle-only-config"):
+                    content = tar.extractfile(member).read().decode()
+                    assert "bundle only content" in content
+                    break
+            else:
+                pytest.fail(".my-bundle-only-config not found in tarball")
+
+    def test_package_builder_should_copy_addition_directories(self, mock_repo: MockDotfilesRepo):
+        # GIVEN
+        mock_repo.create_file(".zshrc", "# zshrc")
+        add_dir = mock_repo.create_addition("test", ".config/my-tool", content=None)
+        (add_dir / "config.toml").write_text("[settings]\nvalue = 1")
+        (add_dir / "themes").mkdir()
+        (add_dir / "themes" / "dark.toml").write_text("[theme]\nname = 'dark'")
+        mock_repo.create_util()
+
+        config = BundleConfig(name="test", packages_install=[])
+        files = [
+            ResolvedFile(
+                source_path=mock_repo.links_dir / ".zshrc",
+                relative_path=".zshrc",
+                source_type="links",
+            ),
+        ]
+        builder = PackageBuilder(
+            "test",
+            config,
+            bundles_dir=mock_repo.bundles_dir,
+            util_dir=mock_repo.util_dir,
+        )
+        output_path = mock_repo.root / "output.tar.gz"
+
+        # WHEN
+        builder.build(files, output_path)
+
+        # THEN
+        with tarfile.open(output_path, "r:gz") as tar:
+            names = tar.getnames()
+            # Check that directory contents are present with correct path (no .add suffix)
+            assert any(".config/my-tool/config.toml" in n for n in names)
+            assert any(".config/my-tool/themes/dark.toml" in n for n in names)
+            # Verify .add is NOT in the extracted paths
+            assert not any(".add" in n for n in names if "my-tool" in n)
 
 
 # ============================================================================
