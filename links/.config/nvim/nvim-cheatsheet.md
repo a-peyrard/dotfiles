@@ -159,7 +159,7 @@ Examples:
 | `gK` | Signature Help | Show function signature & parameters (works anywhere in function call) |
 | `<leader>rn` | Rename | Rename symbol across project |
 | `<leader>ca` | Code Action | Show available fixes/actions |
-| `<leader>f` | Format | Format current buffer |
+| `<leader>cf` | Format | Format current buffer |
 
 **When to use K vs gK:**
 - `K` on a function/variable → shows full documentation
@@ -588,7 +588,7 @@ Then:
 4. `K` - Read documentation
 5. `gK` - See function signature (when inside function calls)
 6. `<leader>ca` - See code actions
-7. `<leader>f` - Format before saving
+7. `<leader>cf` - Format before saving
 8. `:w` - Save
 
 ### Git Workflow
@@ -692,7 +692,7 @@ Then:
 - `gl` - Show error/diagnostic message
 - `Ctrl+w w` - Enter floating window (to scroll long docs)
 - `<leader>ca` - Code actions (fixes!)
-- `<leader>f` - Format
+- `<leader>cf` - Format
 - `]d` / `[d` - Next/Previous diagnostic
 - `Ctrl+h/j/k/l` - Navigate splits/tmux
 - `yy` - Copy line (to system clipboard!)
