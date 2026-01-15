@@ -33,6 +33,7 @@ fi
 setopt no_complete_aliases
 
 # History configuration
+export HISTFILE=~/.zsh_history
 export HISTSIZE=999999999
 export SAVEHIST=$HISTSIZE
 setopt EXTENDED_HISTORY          # Write the history file in :start:elapsed;command format
