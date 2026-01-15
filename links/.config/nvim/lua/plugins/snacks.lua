@@ -9,7 +9,13 @@ return {
     picker = {
       enabled = true,
       sources = {
-        files = { hidden = true },
+        files = {
+          hidden = true,  -- Show dotfiles
+          ignored = true, -- Show gitignored files
+        },
+        explorer = {
+          ignored = true, -- Show gitignored files in explorer
+        },
       },
       win = {
         input = {
