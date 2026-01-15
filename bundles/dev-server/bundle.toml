@@ -1,0 +1,74 @@
+[bundle]
+name = "dev-server"
+description = "Development server with full neovim setup"
+target = "linux"
+
+[files]
+include = [
+    ".aliases",
+    ".bin/",
+    ".config/nvim/",
+    ".config/starship.toml",
+    ".env.d/common/",
+    ".env.d/linux/",
+    ".gitconfig",
+    ".gitignore_global",
+    ".tmux.conf",
+    ".vimrc",
+    ".zshenv",
+    ".zshrc",
+]
+exclude = [
+    # macOS GUI scripts
+    ".bin/bootstrap_wh_*",
+    ".bin/start_*",
+    ".bin/stop_*",
+    ".bin/toggle-*.sh",
+    ".bin/window_reorg.sh",
+    # Not needed on dev server
+    ".bin/color",
+    ".bin/create-problem",
+    ".bin/dotfiles-bundle",
+    ".bin/dotfiles-package",
+    ".bin/fix_virtualenv",
+    ".bin/local-tmux",
+    ".bin/notify",
+    ".bin/test-go-workspace",
+    ".bin/topic-size",
+    # macOS/GUI env files
+    ".env.d/common/20_gui-app.env",
+    ".env.d/common/22_latex.env",
+    ".env.d/common/24_meta.env",
+    ".env.d/common/25_meteo.env",
+    # Not available on dev server
+    ".env.d/common/14_docker.env",
+    ".env.d/common/33_pyenv.env",
+]
+
+[runtime]
+include = [
+    ".tmux/plugins/",
+    ".zsh/plugins/",
+]
+exclude = [
+    "**/.git/",
+    "**/.github/",
+    "**/test/",
+    "**/tests/",
+]
+
+[packages]
+install = [
+    "autojump",
+    "delta",
+    "fzf",
+    "jq",
+    "neovim",
+    "ripgrep",
+    "starship",
+    "tmux",
+    "tree",
+    "vim",
+    "zsh",
+    "zsh-syntax-highlighting",
+]

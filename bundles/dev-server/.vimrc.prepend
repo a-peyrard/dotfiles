@@ -1,0 +1,2 @@
+" master vimrc @meta
+source $LOCAL_ADMIN_SCRIPTS/master.vimrc
