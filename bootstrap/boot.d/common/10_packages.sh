@@ -55,6 +55,7 @@ pkg_install "jq" ${dry_run}
 pkg_install "fzf" ${dry_run}
 pkg_install "rsync" ${dry_run}
 pkg_install "htop" ${dry_run}
+pkg_install "just" ${dry_run}
 
 # Git tools
 pkg_install "delta" ${dry_run}
