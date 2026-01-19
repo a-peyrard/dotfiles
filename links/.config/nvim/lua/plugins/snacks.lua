@@ -68,7 +68,7 @@ return {
     { "<leader>fb", function() Snacks.picker.buffers() end, desc = "Buffers" },
     { "<leader>fh", function() Snacks.picker.help() end, desc = "Help Tags" },
 
-    -- New: keymaps and commands (replaces legendary) - no preview
+    -- New: keymaps and commands (replaces legendary) - no preview (shows unhelpful metadata)
     { "<leader>fk", function() Snacks.picker.keymaps({ layout = { preview = false } }) end, desc = "Keymaps" },
     { "<leader>fc", function() Snacks.picker.commands({ layout = { preview = false } }) end, desc = "Commands" },
 

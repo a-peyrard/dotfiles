@@ -27,4 +27,11 @@ return {
       },
     },
   },
+
+  -- Rust-inspired theme (available via <leader>ft)
+  {
+    "nasccped/rustheme.nvim",
+    lazy = false,
+    priority = 1000,
+  },
 }
