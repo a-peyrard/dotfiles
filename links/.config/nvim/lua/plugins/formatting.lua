@@ -3,6 +3,15 @@ return {
   "stevearc/conform.nvim",
   event = { "BufWritePre" },
   cmd = { "ConformInfo" },
+  keys = {
+    {
+      "<leader>cf",
+      function()
+        require("conform").format({ async = true, lsp_fallback = true })
+      end,
+      desc = "Format code",
+    },
+  },
   config = function()
     require("conform").setup({
       formatters_by_ft = {
@@ -17,6 +26,9 @@ return {
 
         -- Go: goimports for imports + gofmt for formatting
         go = { "goimports", "gofmt" },
+
+        -- JSON: jq for formatting
+        json = { "jq" },
       },
 
       -- Manual formatting only (use <leader>f)
