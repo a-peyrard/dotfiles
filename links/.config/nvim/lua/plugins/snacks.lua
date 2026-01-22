@@ -103,5 +103,17 @@ return {
         Snacks.toggle.inlay_hints():map("<leader>uh")
       end,
     })
+
+    -- Set tmux navigation keys for explorer/picker
+    vim.api.nvim_create_autocmd("FileType", {
+      pattern = "snacks_picker_list",
+      callback = function()
+        local opts = { buffer = true, silent = true }
+        vim.keymap.set("n", "<C-h>", "<cmd>TmuxNavigateLeft<cr>", opts)
+        vim.keymap.set("n", "<C-j>", "<cmd>TmuxNavigateDown<cr>", opts)
+        vim.keymap.set("n", "<C-k>", "<cmd>TmuxNavigateUp<cr>", opts)
+        vim.keymap.set("n", "<C-l>", "<cmd>TmuxNavigateRight<cr>", opts)
+      end,
+    })
   end,
 }
