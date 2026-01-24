@@ -106,4 +106,8 @@ pkg_install_cask "jetbrains-toolbox" ${dry_run}
 pkg_install_cask "bartender" ${dry_run}
 pkg_install_cask "obsidian" ${dry_run}
 
+# Fonts (Nerd Fonts for terminal icons)
+pkg_install_cask "font-meslo-lg-nerd-font" ${dry_run}
+pkg_install_cask "font-jetbrains-mono-nerd-font" ${dry_run}
+
 echo "✅ macOS-specific packages installation complete!"

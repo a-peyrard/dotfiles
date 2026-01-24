@@ -92,7 +92,7 @@ selection-background = #606060
 selection-foreground = #ffffff
 
 # Font configuration
-font-family = "Menlo"
+font-family = "MesloLGM Nerd Font"
 font-size = 13
 font-style-bold = true
 font-style-italic = true
@@ -103,3 +103,8 @@ initial-command = /Users/augustin/.bin/local-tmux
 # navigate between tabs
 keybind = cmd+left=previous_tab
 keybind = cmd+right=next_tab
+
+# Force Nerd Font for Private Use Area codepoints
+# This ensures FA, Powerline, and other icon ranges use the Nerd Font
+font-codepoint-map = U+E000-U+F8FF=MesloLGM Nerd Font
+font-codepoint-map = U+F0000-U+FFFFF=MesloLGM Nerd Font
