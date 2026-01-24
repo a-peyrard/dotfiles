@@ -52,13 +52,13 @@ return {
         vim.keymap.set('n', '<leader>ci', vim.lsp.buf.incoming_calls, opts)
         vim.keymap.set('n', '<leader>co', vim.lsp.buf.outgoing_calls, opts)
 
-        -- Diagnostic navigation
-        vim.keymap.set('n', ']d', vim.diagnostic.goto_next, opts)
-        vim.keymap.set('n', '[d', vim.diagnostic.goto_prev, opts)
+        -- Diagnostic navigation (Neovim 0.10+ API)
+        vim.keymap.set('n', ']d', function() vim.diagnostic.jump({ count = 1, float = true }) end, opts)
+        vim.keymap.set('n', '[d', function() vim.diagnostic.jump({ count = -1, float = true }) end, opts)
         vim.keymap.set('n', 'gl', vim.diagnostic.open_float, opts)
 
         -- Enable inlay hints by default if supported
-        if client.supports_method("textDocument/inlayHint") then
+        if client:supports_method("textDocument/inlayHint") then
           vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
         end
       end
