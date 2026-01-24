@@ -17,6 +17,7 @@ include = [
     ".vimrc",
     ".zshenv",
     ".zshrc",
+    ".zsh_completions.private/",
 ]
 exclude = [
     # macOS GUI scripts

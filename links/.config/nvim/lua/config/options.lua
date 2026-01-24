@@ -17,7 +17,7 @@ vim.opt.cursorline = true       -- Highlight the current line
 -- vim.opt.cursorcolumn = true  -- Disabled: too distracting. Using indent guides instead
 
 -- Sign column (for git signs, LSP diagnostics, etc.)
-vim.opt.signcolumn = "yes"      -- Always show sign column (prevents text jumping)
+vim.opt.signcolumn = "yes"      -- Single sign column (diagnostics take priority over VCS)
 
 -- Better scrolling
 vim.opt.scrolloff = 8           -- Keep 8 lines visible above/below cursor
@@ -107,15 +107,59 @@ vim.opt.listchars = {
   eol = "¬",       -- End of line
 }
 
--- Configure diagnostic floating windows with borders (matches completion style)
+-- Ensure diagnostic sign highlights have visible colors
+vim.api.nvim_set_hl(0, "DiagnosticSignError", { fg = "#db4b4b", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticSignWarn", { fg = "#e0af68", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticSignHint", { fg = "#1abc9c", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticSignInfo", { fg = "#0db9d7", bg = "NONE" })
+
+-- Configure diagnostic display (Neovim 0.10+ API)
 vim.diagnostic.config({
-  float = {
-    border = "rounded",  -- Rounded borders for diagnostic floating windows
-    source = "always",   -- Always show the source (e.g., "rust-analyzer", "pyright")
-    header = "",         -- No header
-    prefix = "",         -- No prefix
-    focusable = true,    -- Allow entering the window with Ctrl+w w
+  signs = {
+    text = {
+      [vim.diagnostic.severity.ERROR] = "\u{F057}",  -- FA times-circle
+      [vim.diagnostic.severity.WARN] = "\u{F071}",   -- FA exclamation-triangle
+      [vim.diagnostic.severity.HINT] = "\u{F0EB}",   -- FA lightbulb
+      [vim.diagnostic.severity.INFO] = "\u{F05A}",   -- FA info-circle
+    },
   },
+  virtual_text = {
+    prefix = "●",
+    spacing = 2,
+  },
+  underline = true,
+  update_in_insert = false,
+  severity_sort = true,
+  float = {
+    border = "rounded",
+    source = "always",
+    header = "",
+    prefix = "",
+    focusable = true,
+  },
+})
+
+-- Custom diagnostic virtual text highlights (transparent background)
+vim.api.nvim_set_hl(0, "DiagnosticVirtualTextError", { fg = "#db4b4b", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticVirtualTextWarn", { fg = "#e0af68", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticVirtualTextInfo", { fg = "#0db9d7", bg = "NONE" })
+vim.api.nvim_set_hl(0, "DiagnosticVirtualTextHint", { fg = "#1abc9c", bg = "NONE" })
+
+-- Persist highlights on colorscheme change
+vim.api.nvim_create_autocmd("ColorScheme", {
+  pattern = "*",
+  callback = function()
+    -- Diagnostic sign highlights
+    vim.api.nvim_set_hl(0, "DiagnosticSignError", { fg = "#db4b4b", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticSignWarn", { fg = "#e0af68", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticSignHint", { fg = "#1abc9c", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticSignInfo", { fg = "#0db9d7", bg = "NONE" })
+    -- Diagnostic virtual text highlights
+    vim.api.nvim_set_hl(0, "DiagnosticVirtualTextError", { fg = "#db4b4b", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticVirtualTextWarn", { fg = "#e0af68", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticVirtualTextInfo", { fg = "#0db9d7", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "DiagnosticVirtualTextHint", { fg = "#1abc9c", bg = "NONE" })
+  end,
 })
 
 -- ============================================================================
