@@ -15,6 +15,8 @@ return {
       "leoluz/nvim-dap-go",
       -- Persist breakpoints across sessions
       "ldelossa/nvim-dap-projects",
+      -- Automatic breakpoint persistence
+      "Weissle/persistent-breakpoints.nvim",
     },
     -- Load plugin when these keys are pressed AND map them
     keys = {
@@ -22,8 +24,8 @@ return {
       { "<F10>", function() require("dap").step_over() end, desc = "Debug: Step Over" },
       { "<F11>", function() require("dap").step_into() end, desc = "Debug: Step Into" },
       { "<F12>", function() require("dap").step_out() end, desc = "Debug: Step Out" },
-      { "<leader>db", function() require("dap").toggle_breakpoint() end, desc = "Debug: Toggle Breakpoint" },
-      { "<leader>dB", function() require("dap").set_breakpoint(vim.fn.input("Breakpoint condition: ")) end, desc = "Debug: Conditional Breakpoint" },
+      { "<leader>db", function() require("persistent-breakpoints.api").toggle_breakpoint() end, desc = "Debug: Toggle Breakpoint" },
+      { "<leader>dB", function() require("persistent-breakpoints.api").set_conditional_breakpoint() end, desc = "Debug: Conditional Breakpoint" },
       { "<leader>dr", function() require("dap").repl.open() end, desc = "Debug: Open REPL" },
       { "<leader>dl", function() require("dap").run_last() end, desc = "Debug: Run Last" },
       { "<leader>du", function() require("dapui").toggle() end, desc = "Debug: Toggle UI" },
@@ -31,7 +33,7 @@ return {
       { "<leader>dh", function() require("dap.ui.widgets").hover() end, desc = "Debug: Hover Variables", mode = { "n", "v" } },
       { "<leader>dp", function() require("dap.ui.widgets").preview() end, desc = "Debug: Preview", mode = { "n", "v" } },
       { "<leader>dL", function() require("dap").list_breakpoints() end, desc = "Debug: List Breakpoints" },
-      { "<leader>dC", function() require("dap").clear_breakpoints() end, desc = "Debug: Clear All Breakpoints" },
+      { "<leader>dC", function() require("persistent-breakpoints.api").clear_all_breakpoints() end, desc = "Debug: Clear All Breakpoints" },
     },
     config = function()
       local dap = require("dap")
@@ -47,8 +49,15 @@ return {
       -- Setup nvim-dap-go (required by neotest-golang)
       require("dap-go").setup()
 
-      -- Setup nvim-dap-projects for breakpoint persistence
+      -- Setup nvim-dap-projects for project-specific DAP configs
       require("nvim-dap-projects").search_project_config()
+
+      -- Setup persistent-breakpoints for breakpoint persistence
+      require("persistent-breakpoints").setup({
+        save_dir = vim.fn.stdpath("data") .. "/breakpoints",
+        load_breakpoints_event = { "BufReadPost" },
+        perf_record = false,
+      })
 
       -- Explicit codelldb adapter configuration
       local mason_registry_ok, mason_registry = pcall(require, "mason-registry")
