@@ -1,5 +1,5 @@
 -- statuscol.nvim - Custom status column layout (JetBrains-style)
--- Layout: [diagnostics/breakpoints] [line numbers] [git indicator]
+-- Layout: [diagnostics/breakpoints] [VCS] [line numbers] [spacer] | code
 return {
   "luukvbaal/statuscol.nvim",
   config = function()
@@ -7,7 +7,7 @@ return {
     require("statuscol").setup({
       relculright = true,  -- Right-align relative numbers
       segments = {
-        -- 1. Diagnostics and DAP breakpoints (left side)
+        -- 1. Diagnostics and DAP breakpoints (far left)
         {
           sign = {
             namespace = { "diagnostic" },
@@ -17,11 +17,7 @@ return {
           },
           click = "v:lua.ScSa",
         },
-        -- 2. Line numbers
-        { text = { builtin.lnumfunc }, click = "v:lua.ScLa" },
-        -- 3. Small spacer before VCS indicator
-        { text = { " " } },
-        -- 4. VCS changes - single segment for both Git and Mercurial
+        -- 2. VCS changes - thin colored bar (left of numbers)
         {
           sign = {
             name = { "GitSigns", "Signify" },
@@ -31,6 +27,10 @@ return {
           },
           click = "v:lua.ScSa",
         },
+        -- 3. Line numbers
+        { text = { builtin.lnumfunc }, click = "v:lua.ScLa" },
+        -- 4. Small spacer before code
+        { text = { " " } },
       },
     })
   end,

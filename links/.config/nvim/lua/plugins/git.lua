@@ -5,11 +5,11 @@ return {
   config = function()
     require("gitsigns").setup({
       signs = {
-        add = { text = "▎" },          -- Thin left bar (JetBrains-style)
-        change = { text = "▎" },
-        delete = { text = "▎" },
-        topdelete = { text = "▎" },
-        changedelete = { text = "▎" },
+        add = { text = "┃" },          -- Thick centered vertical line (JetBrains-style)
+        change = { text = "┃" },
+        delete = { text = "┃" },
+        topdelete = { text = "┃" },
+        changedelete = { text = "┃" },
       },
       signcolumn = true,   -- Enable signs (statuscol positions them after line numbers)
       numhl = false,       -- Don't color line numbers
