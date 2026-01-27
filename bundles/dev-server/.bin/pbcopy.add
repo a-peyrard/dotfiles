@@ -1,0 +1,14 @@
+#!/bin/bash
+# OSC 52 clipboard support for remote servers
+# Pipes stdin to the local clipboard via terminal escape sequences
+
+buf=$(cat)
+buflen=$(printf %s "$buf" | wc -c)
+maxlen=74994
+
+if [ $buflen -gt $maxlen ]; then
+    echo "Input is too large for OSC 52 (${buflen} bytes)" >&2
+    exit 1
+fi
+
+printf "\033]52;c;%s\a" "$(printf %s "$buf" | base64)"
