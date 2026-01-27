@@ -318,6 +318,7 @@ Jump to any visible location with labels!
 | `<leader>hd` | Diff this |
 | `<leader>hp` | Preview hunk |
 | `<leader>hu` | Undo hunk |
+| `<leader>hR` | Revert entire file |
 
 **Note:** Same gutter signs as Git (+/-/~). Auto-detects VCS type.
 
