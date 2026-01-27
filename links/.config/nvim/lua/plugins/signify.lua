@@ -6,12 +6,12 @@ return {
     -- Only use signify for Mercurial and Sapling (let gitsigns handle Git)
     vim.g.signify_vcs_list = { "hg", "sapling" }
 
-    -- Thin vertical bar signs (JetBrains-style, statuscol positions after line numbers)
-    vim.g.signify_sign_add = "▎"
-    vim.g.signify_sign_delete = "▎"
-    vim.g.signify_sign_delete_first_line = "▎"
-    vim.g.signify_sign_change = "▎"
-    vim.g.signify_sign_change_delete = "▎"
+    -- Thick centered vertical bar signs (JetBrains-style, statuscol positions after line numbers)
+    vim.g.signify_sign_add = "┃"
+    vim.g.signify_sign_delete = "┃"
+    vim.g.signify_sign_delete_first_line = "┃"
+    vim.g.signify_sign_change = "┃"
+    vim.g.signify_sign_change_delete = "┃"
     vim.g.signify_sign_show_count = 0
 
     -- Update signs asynchronously
