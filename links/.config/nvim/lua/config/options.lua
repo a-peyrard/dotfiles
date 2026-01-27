@@ -113,6 +113,11 @@ vim.api.nvim_set_hl(0, "DiagnosticSignWarn", { fg = "#e0af68", bg = "NONE" })
 vim.api.nvim_set_hl(0, "DiagnosticSignHint", { fg = "#1abc9c", bg = "NONE" })
 vim.api.nvim_set_hl(0, "DiagnosticSignInfo", { fg = "#0db9d7", bg = "NONE" })
 
+-- Gitsigns line number highlights (VCS changes shown in line numbers)
+vim.api.nvim_set_hl(0, "GitSignsAddNr", { fg = "#98c379", bg = "NONE" })
+vim.api.nvim_set_hl(0, "GitSignsChangeNr", { fg = "#e5c07b", bg = "NONE" })
+vim.api.nvim_set_hl(0, "GitSignsDeleteNr", { fg = "#e06c75", bg = "NONE" })
+
 -- Configure diagnostic display (Neovim 0.10+ API)
 vim.diagnostic.config({
   signs = {
@@ -159,6 +164,10 @@ vim.api.nvim_create_autocmd("ColorScheme", {
     vim.api.nvim_set_hl(0, "DiagnosticVirtualTextWarn", { fg = "#e0af68", bg = "NONE" })
     vim.api.nvim_set_hl(0, "DiagnosticVirtualTextInfo", { fg = "#0db9d7", bg = "NONE" })
     vim.api.nvim_set_hl(0, "DiagnosticVirtualTextHint", { fg = "#1abc9c", bg = "NONE" })
+    -- Gitsigns line number highlights
+    vim.api.nvim_set_hl(0, "GitSignsAddNr", { fg = "#98c379", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "GitSignsChangeNr", { fg = "#e5c07b", bg = "NONE" })
+    vim.api.nvim_set_hl(0, "GitSignsDeleteNr", { fg = "#e06c75", bg = "NONE" })
   end,
 })
 
