@@ -32,9 +32,11 @@ return {
       { "<leader>dt", function() require("dap").terminate() end, desc = "Debug: Terminate" },
       { "<leader>dh", function() require("dap.ui.widgets").hover() end, desc = "Debug: Hover Variables", mode = { "n", "v" } },
       { "<leader>dp", function() require("dap.ui.widgets").preview() end, desc = "Debug: Preview", mode = { "n", "v" } },
-      { "<leader>dL", function() require("dap").list_breakpoints() end, desc = "Debug: List Breakpoints" },
+      { "<leader>dL", function() require("dap").list_breakpoints(); vim.cmd("copen") end, desc = "Debug: List Breakpoints" },
       { "<leader>dC", function() require("persistent-breakpoints.api").clear_all_breakpoints() end, desc = "Debug: Clear All Breakpoints" },
     },
+    -- Load on file open to ensure breakpoints are restored
+    event = { "BufReadPost" },
     config = function()
       local dap = require("dap")
       local dapui = require("dapui")
@@ -247,18 +249,18 @@ return {
       end
 
       -- Custom breakpoint colors
-      vim.api.nvim_set_hl(0, "DapBreakpoint", { fg = "#8B0000" }) -- Dark red
-      vim.api.nvim_set_hl(0, "DapBreakpointCondition", { fg = "#DC143C" }) -- Crimson (brighter red for conditional)
+      vim.api.nvim_set_hl(0, "DapBreakpoint", { fg = "#FF5252" }) -- Bright red
+      vim.api.nvim_set_hl(0, "DapBreakpointCondition", { fg = "#FFA726" }) -- Orange for conditional
       vim.api.nvim_set_hl(0, "DapLogPoint", { fg = "#FFA500" }) -- Orange
       vim.api.nvim_set_hl(0, "DapStopped", { fg = "#FFD700", bg = "#3E3E00" }) -- Gold with dark yellow background
       vim.api.nvim_set_hl(0, "DapBreakpointRejected", { fg = "#808080" }) -- Gray
 
-      -- Breakpoint signs
-      vim.fn.sign_define("DapBreakpoint", { text = "●", texthl = "DapBreakpoint", linehl = "", numhl = "" })
-      vim.fn.sign_define("DapBreakpointCondition", { text = "◆", texthl = "DapBreakpointCondition", linehl = "", numhl = "" })
-      vim.fn.sign_define("DapLogPoint", { text = "◆", texthl = "DapLogPoint", linehl = "", numhl = "" })
-      vim.fn.sign_define("DapStopped", { text = "→", texthl = "DapStopped", linehl = "DapStopped", numhl = "" })
-      vim.fn.sign_define("DapBreakpointRejected", { text = "○", texthl = "DapBreakpointRejected", linehl = "", numhl = "" })
+      -- Breakpoint signs (Nerd Font codicons)
+      vim.fn.sign_define("DapBreakpoint", { text = "\u{eb8c}", texthl = "DapBreakpoint", linehl = "", numhl = "" })              -- nf-cod-debug_breakpoint
+      vim.fn.sign_define("DapBreakpointCondition", { text = "\u{eb8d}", texthl = "DapBreakpointCondition", linehl = "", numhl = "" }) -- nf-cod-debug_breakpoint_conditional
+      vim.fn.sign_define("DapLogPoint", { text = "\u{eb8f}", texthl = "DapLogPoint", linehl = "", numhl = "" })                  -- nf-cod-debug_breakpoint_log
+      vim.fn.sign_define("DapStopped", { text = "\u{ea9c}", texthl = "DapStopped", linehl = "DapStopped", numhl = "" })          -- nf-cod-arrow_right
+      vim.fn.sign_define("DapBreakpointRejected", { text = "\u{eb91}", texthl = "DapBreakpointRejected", linehl = "", numhl = "" }) -- nf-cod-debug_breakpoint_disabled
     end,
   },
 }
