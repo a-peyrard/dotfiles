@@ -60,6 +60,10 @@ return {
           gs.blame_line({ full = true })
         end, { desc = "Blame line" })
         map("n", "<leader>hd", gs.diffthis, { desc = "Diff this" })
+        map("n", "<leader>hL", function()
+          gs.setqflist("all")
+          vim.cmd("copen")
+        end, { desc = "List all hunks" })
       end,
     })
   end,

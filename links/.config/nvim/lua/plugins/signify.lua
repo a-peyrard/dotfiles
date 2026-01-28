@@ -44,5 +44,11 @@ return {
       vim.cmd("edit!")  -- Reload the buffer
       vim.notify("Reverted: " .. file, vim.log.levels.INFO)
     end, { desc = "Signify: Revert file" })
+
+    -- List all hunks in quickfix
+    vim.keymap.set("n", "<leader>hL", function()
+      vim.cmd("SignifyListUnstaged")
+      vim.cmd("copen")
+    end, { desc = "Signify: List all hunks" })
   end,
 }
