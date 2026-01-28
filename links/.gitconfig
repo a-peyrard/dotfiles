@@ -2,9 +2,6 @@
 	name = Augustin Peyrard
 	email = augustin.peyrard@gmail.com
 
-[url "ssh://git@github.com/"]
-	insteadOf = https://github.com/
-
 [color]
 	ui = true
 	status = auto
