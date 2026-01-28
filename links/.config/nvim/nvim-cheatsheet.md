@@ -298,6 +298,7 @@ Jump to any visible location with labels!
 | `<leader>hp` | Preview hunk |
 | `<leader>hb` | Blame line |
 | `<leader>hd` | Diff this |
+| `<leader>hL` | List all hunks (quickfix) |
 
 **Visual mode workflow:**
 1. Enter visual mode with `V` (line) or `v` (character)
@@ -319,8 +320,51 @@ Jump to any visible location with labels!
 | `<leader>hp` | Preview hunk |
 | `<leader>hu` | Undo hunk |
 | `<leader>hR` | Revert entire file |
+| `<leader>hL` | List all hunks (quickfix) |
 
 **Note:** Same gutter signs as Git (+/-/~). Auto-detects VCS type.
+
+---
+
+## 🔀 Conflict Resolution & Diff (diffview.nvim)
+
+**Works with Git and Mercurial - 3-way diff with conflict resolution**
+
+### Opening Diffview
+| Keybinding | Action |
+|------------|--------|
+| `<leader>gd` | Open Diffview (show conflicts/changes) |
+| `<leader>gD` | Close Diffview |
+| `<leader>gh` | File history (current file) |
+| `<leader>gH` | Branch history |
+
+### Navigation (inside Diffview)
+| Keybinding | Action |
+|------------|--------|
+| `]x` | Jump to next conflict |
+| `[x` | Jump to previous conflict |
+| `j` / `k` | Navigate file panel |
+| `Enter` | Open entry |
+| `q` | Close Diffview |
+
+### Resolution (cursor on conflict)
+| Keybinding | Action |
+|------------|--------|
+| `<leader>co` | Choose **o**urs (your local changes) |
+| `<leader>ct` | Choose **t**heirs (incoming changes) |
+| `<leader>cb` | Choose **b**ase (common ancestor) |
+| `<leader>ca` | Choose **a**ll (keep all versions) |
+| `dx` | Delete conflict region |
+
+**Workflow:**
+1. During merge/rebase, run `<leader>gd` to open Diffview
+2. Conflicted files appear in a dedicated section
+3. Select a file to open 3-way diff view
+4. Press `]x` to jump to first conflict
+5. Use `<leader>co`, `<leader>ct`, `<leader>cb`, or `<leader>ca` to resolve
+6. Press `]x` for next conflict
+7. Press `q` to close when done
+8. Save with `:w` and continue merge/rebase
 
 ---
 
