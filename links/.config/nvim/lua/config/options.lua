@@ -98,7 +98,7 @@ vim.opt.autoindent = true       -- Copy indent from current line when starting n
 vim.opt.diffopt:append("vertical")  -- Vertical diff splits
 
 -- Show invisible characters (IntelliJ-style subtle display)
-vim.opt.list = true
+vim.opt.list = false
 vim.opt.listchars = {
   tab = "▸ ",      -- Tab character
   space = "·",     -- Space character (middle dot)
