@@ -46,6 +46,7 @@ pkg_install "git" ${dry_run}
 pkg_install "tmux" ${dry_run}
 pkg_install "zsh" ${dry_run}
 pkg_install "vim" ${dry_run}
+pkg_install "neovim" ${dry_run}
 
 # Shell utilities
 pkg_install "tree" ${dry_run}
@@ -56,6 +57,8 @@ pkg_install "fzf" ${dry_run}
 pkg_install "rsync" ${dry_run}
 pkg_install "htop" ${dry_run}
 pkg_install "just" ${dry_run}
+pkg_install "tree-sitter" ${dry_run}
+pkg_install "tree-sitter-cli" ${dry_run}
 
 # Git tools
 pkg_install "delta" ${dry_run}
