@@ -8,6 +8,15 @@ return {
     lazy = false,
     priority = 100,
     config = function()
+      require("nvim-treesitter").setup({
+        ensure_installed = {
+          "python", "go", "rust", "lua", "bash",
+          "json", "yaml", "toml",
+          "markdown", "markdown_inline",
+          "vim", "vimdoc",
+        },
+      })
+
       -- Enable highlighting automatically for all filetypes
       vim.api.nvim_create_autocmd("FileType", {
         pattern = "*",
