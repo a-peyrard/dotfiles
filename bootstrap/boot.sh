@@ -30,18 +30,33 @@ if [ ! -d "$boot_log_dir" ]; then
 	mkdir "$boot_log_dir"
 fi
 
-boots_already_done=()
-while IFS=\n read line
-do
-	boots_already_done+=($line)
-done <<< "$(find $boot_log_dir -type f -exec basename {} \;|perl -pe 's/(.*)\.\d{8}-\d{4}/\1/')"
+# Compute md5 checksum portably (macOS vs Linux)
+compute_md5() {
+  if command -v md5sum &>/dev/null; then
+    md5sum "$1" | awk '{print $1}'
+  else
+    md5 -q "$1"
+  fi
+}
 
-function containsElement() {
-  local e match="$1"
-  shift
+# Check if a boot script needs to run by comparing its md5 to the stored marker
+needs_run() {
+  local script="$1"
+  local marker_file="$boot_log_dir/$(basename "$script").md5"
+  if [ ! -f "$marker_file" ]; then
+    return 0  # No marker, needs to run
+  fi
+  local stored_md5
+  stored_md5=$(cat "$marker_file")
+  local current_md5
+  current_md5=$(compute_md5 "$script")
+  [ "$stored_md5" != "$current_md5" ]
+}
 
-  for e; do [[ "$e" == "$match" ]] && return 0; done
-  return 1
+# Record the md5 of a script after successful execution
+record_run() {
+  local script="$1"
+  compute_md5 "$script" > "$boot_log_dir/$(basename "$script").md5"
 }
 
 # Collect boot scripts from subdirectories with override logic
@@ -87,16 +102,16 @@ collect_boot_scripts() {
 }
 
 for boot_script in $(collect_boot_scripts); do
-	if containsElement "$(basename ${boot_script})" "${boots_already_done[@]}"; then
-		echo " ⏩  skip ${bold}${boot_script}${normal}, already executed"
-	else
+	if needs_run "$boot_script"; then
 		if [[ ${dry_run} == 1 ]]; then
 			echo " ✨   (DRY RUN) running ${bold}${boot_script}${normal}"
 			bash $boot_script --dry-run
 		else
 			echo " ✨  running ${bold}${boot_script}${normal}"
 			bash $boot_script
-			touch $boot_log_dir/$(basename $boot_script).$(date +%Y%m%d-%H%M)
+			record_run "$boot_script"
 		fi
+	else
+		echo " ⏩  skip ${bold}${boot_script}${normal}, already executed"
 	fi
 done
