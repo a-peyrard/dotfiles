@@ -52,9 +52,14 @@ setopt HIST_SAVE_NO_DUPS         # Don't write duplicate entries in the history 
 # Set PATH
 export PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Set PATH, MANPATH, etc., for Homebrew (macOS only)
+# Detect Homebrew prefix and configure (macOS only)
 if [ "$OS_TYPE" = "macos" ]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
+  if [ -d "/opt/homebrew" ]; then
+    HOMEBREW_PREFIX="/opt/homebrew"
+  elif [ -d "/usr/local/Homebrew" ]; then
+    HOMEBREW_PREFIX="/usr/local"
+  fi
+  eval "$($HOMEBREW_PREFIX/bin/brew shellenv)"
 fi
 
 # Language environment
