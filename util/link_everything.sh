@@ -24,6 +24,25 @@ function link_file() {
 	relative_dest=$(sed "s/$prefix//" <<< $file)
 	absolute_dest=$(echo "$base_dest$relative_dest")
 
+	# Skip the source root directory itself (find includes it as first result)
+	if [[ "$file" == "$src" ]]; then
+		return
+	fi
+
+	# If destination is a real directory (not a symlink) and source is also
+	# a directory, recurse and link children individually instead of trying
+	# to replace the directory (which would create a broken symlink inside it)
+	if [[ -d "$absolute_dest" && ! -L "$absolute_dest" && -d "$file" ]]; then
+		for child in "$file"/.* "$file"/*; do
+			# Skip . and .. entries
+			[[ "$child" == "$file/." || "$child" == "$file/.." ]] && continue
+			# Skip unmatched globs
+			[[ ! -e "$child" ]] && continue
+			link_file "$src" "$child" "$base_dest" "$force" "$verbose" "$dry_mode"
+		done
+		return
+	fi
+
 	log_prefix=""
 	if [[ $dry_mode == 1 ]]; then
 		log_prefix="(DRY RUN) "
