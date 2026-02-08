@@ -19,6 +19,7 @@ return {
         end,
       },
       "rouge8/neotest-rust",
+      "nvim-neotest/neotest-python",
     },
     keys = {
       { "<leader>tt", function() require('neotest').run.run() end, desc = "Run nearest test" },
@@ -39,10 +40,13 @@ return {
           require("neotest-rust")({
             args = { "--no-capture" },
           }),
+          require("neotest-python")({
+            dap = { justMyCode = false },
+          }),
         },
         status = {
           enabled = true,
-          virtual_text = false,
+          virtual_text = true,
           signs = true,
         },
         icons = {
@@ -67,6 +71,12 @@ return {
           expand_errors = true,
         },
       })
+
+      -- Define highlight groups for neotest signs so they're visible
+      vim.api.nvim_set_hl(0, "NeotestPassed", { fg = "#50fa7b" })
+      vim.api.nvim_set_hl(0, "NeotestFailed", { fg = "#ff5555" })
+      vim.api.nvim_set_hl(0, "NeotestRunning", { fg = "#f1fa8c" })
+      vim.api.nvim_set_hl(0, "NeotestSkipped", { fg = "#6272a4" })
     end,
   },
 }
