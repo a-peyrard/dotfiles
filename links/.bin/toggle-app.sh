@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Ensure Homebrew bin is in PATH (aerospace exec-and-forget may not include it)
+for p in /opt/homebrew/bin /usr/local/bin; do
+  [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
+done
+
 # Usage: toggle-app.sh <app-name> <app-id> [hidden-workspace]
 # Example: toggle-app.sh Ghostty com.mitchellh.ghostty S
 
@@ -17,12 +22,12 @@ LOG="/tmp/aerospace-${APP_NAME}-toggle.log"
 echo "$(date): Toggle triggered for $APP_NAME" >> "$LOG"
 
 # Get app window ID and workspace in one query
-APP_INFO=$(aerospace list-windows --monitor all --app-id "$APP_ID" --format "%{window-id}|%{workspace}" | head -n1)
+APP_INFO=$(aerospace list-windows --monitor all --app-bundle-id "$APP_ID" --format "%{window-id}|%{workspace}" | head -n1)
 APP_WINDOW=$(echo "$APP_INFO" | cut -d'|' -f1)
 APP_WS=$(echo "$APP_INFO" | cut -d'|' -f2)
 
 # Get ALL window IDs
-ALL_WINDOWS=$(aerospace list-windows --monitor all --app-id "$APP_ID" --format "%{window-id}")
+ALL_WINDOWS=$(aerospace list-windows --monitor all --app-bundle-id "$APP_ID" --format "%{window-id}")
 
 echo "$(date): $APP_NAME window ID: $APP_WINDOW" >> "$LOG"
 echo "$(date): $APP_NAME workspace: $APP_WS" >> "$LOG"
@@ -32,7 +37,7 @@ if [ -z "$APP_WINDOW" ]; then
     echo "$(date): No $APP_NAME window, opening..." >> "$LOG"
     open -a "$APP_NAME"
     sleep 0.3
-    APP_WINDOW=$(aerospace list-windows --monitor all --app-id "$APP_ID" --format "%{window-id}" | head -n1)
+    APP_WINDOW=$(aerospace list-windows --monitor all --app-bundle-id "$APP_ID" --format "%{window-id}" | head -n1)
     if [ -n "$APP_WINDOW" ]; then
         aerospace layout --window-id "$APP_WINDOW" floating
         echo "$(date): Opened and set to floating" >> "$LOG"
@@ -93,4 +98,4 @@ else
 fi
 
 echo "=== final status" >> "$LOG"
-aerospace list-windows --app-id $APP_ID --monitor all --format "%{window-id}|%{window-is-fullscreen}|%{window-layout}|%{window-parent-container-layout}|%{window-title}|%{workspace}|%{monitor-id}" >> "$LOG"
+aerospace list-windows --app-bundle-id $APP_ID --monitor all --format "%{window-id}|%{window-is-fullscreen}|%{window-layout}|%{window-parent-container-layout}|%{window-title}|%{workspace}|%{monitor-id}" >> "$LOG"

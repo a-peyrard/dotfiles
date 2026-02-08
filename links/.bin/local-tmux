@@ -1,3 +1,4 @@
 #!/bin/bash
 printf '\033]0;👻\007'
-exec tmux attach || tmux new
+TMUX=$(command -v tmux || { [ -x /opt/homebrew/bin/tmux ] && echo /opt/homebrew/bin/tmux; } || echo /usr/local/bin/tmux)
+exec "$TMUX" new-session -A
