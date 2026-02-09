@@ -44,6 +44,7 @@ exclude = [
     # Not available on dev server
     ".env.d/common/14_docker.env",
     ".env.d/common/33_pyenv.env",
+    ".config/nvim/lua/plugins/codeium.lua",
 ]
 
 [runtime]
