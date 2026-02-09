@@ -63,6 +63,7 @@ pkg_install "tree-sitter-cli" ${dry_run}
 # Git tools
 pkg_install "delta" ${dry_run}
 pkg_install "git-lfs" ${dry_run}
+pkg_install "lefthook" ${dry_run}
 
 # Terminal utilities
 pkg_install "glow" ${dry_run}
