@@ -277,6 +277,28 @@ Jump to any visible location with labels!
 
 ---
 
+## 🤖 AI Completion (Codeium)
+
+**Free inline AI code suggestions (like GitHub Copilot)**
+
+| Keybinding | Action |
+|------------|--------|
+| `Ctrl+l` | Accept suggestion |
+| `Alt+]` | Next suggestion |
+| `Alt+[` | Previous suggestion |
+| `Ctrl+e` | Dismiss suggestion |
+
+### First Time Setup
+```vim
+:Codeium Auth            # Authenticate (free account required)
+:Codeium Enable          # Enable (on by default)
+:Codeium Disable         # Disable temporarily
+```
+
+**Note:** Not included in dev-server bundle (proprietary AI completion used there instead).
+
+---
+
 ## 🎨 Git (gitsigns)
 
 **For Git repositories**
@@ -738,6 +760,7 @@ Then:
 - `Ctrl+w w` - Enter floating window (to scroll long docs)
 - `<leader>ca` - Code actions (fixes!)
 - `<leader>cf` - Format
+- `Ctrl+l` - Accept AI suggestion (Codeium)
 - `]d` / `[d` - Next/Previous diagnostic
 - `Ctrl+h/j/k/l` - Navigate splits/tmux
 - `yy` - Copy line (to system clipboard!)
