@@ -18,6 +18,7 @@ return {
       char = {
         enabled = true,
         jump_labels = true,
+        labels = "afjklweruiopnm",
       },
       -- Treesitter integration
       treesitter = {
