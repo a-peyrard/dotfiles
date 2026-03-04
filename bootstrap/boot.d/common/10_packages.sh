@@ -59,6 +59,7 @@ pkg_install "htop" ${dry_run}
 pkg_install "just" ${dry_run}
 pkg_install "tree-sitter" ${dry_run}
 pkg_install "tree-sitter-cli" ${dry_run}
+pkg_install "fd" ${dry_run}
 
 # Git tools
 pkg_install "delta" ${dry_run}
