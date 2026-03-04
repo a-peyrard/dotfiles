@@ -1,0 +1,21 @@
+#!/bin/bash
+# Usage: pushn <topic_suffix> <message> [title] [priority] [tags]
+
+TOPIC_PREFIX="apeyrard_sf42_"
+TOPIC="${TOPIC_PREFIX}${1}"
+MESSAGE="${2}"
+TITLE="${3}"
+PRIORITY="${4}"
+TAGS="${5}"
+
+if [[ -z "$TOPIC" || -z "$MESSAGE" ]]; then
+  echo "Usage: pushn <topic_suffix> <message> [title] [priority] [tags]"
+  exit 1
+fi
+
+HEADERS=()
+[[ -n "$TITLE" ]]    && HEADERS+=(-H "Title: $TITLE")
+[[ -n "$PRIORITY" ]] && HEADERS+=(-H "Priority: $PRIORITY")
+[[ -n "$TAGS" ]]     && HEADERS+=(-H "Tags: $TAGS")
+
+curl -s "${HEADERS[@]}" -d "$MESSAGE" "ntfy.sh/${TOPIC}"
