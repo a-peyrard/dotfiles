@@ -34,6 +34,7 @@ exclude = [
     ".bin/fix_virtualenv",
     ".bin/local-tmux",
     ".bin/notify",
+    ".bin/pushn",
     ".bin/test-go-workspace",
     ".bin/topic-size",
     # macOS/GUI env files
@@ -63,6 +64,7 @@ exclude = [
 install = [
     "autojump",
     "delta",
+    "fd",
     "fzf",
     "jq",
     "neovim",
