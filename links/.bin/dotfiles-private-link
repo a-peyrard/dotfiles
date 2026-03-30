@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Create symlinks from dotfiles repo to dotfiles-private repo.
+# The private repo mirrors the dotfiles structure — each file gets a symlink
+# at the same relative path.
+#
+# Usage:
+#   dotfiles-private-link              # Link all files
+#   dotfiles-private-link --dry-run    # Show what would be linked
+#   dotfiles-private-link --clean      # Remove symlinks pointing to the private repo
+#
+# Configuration:
+#   DOTFILES_PRIVATE - Path to the private repo (default: sibling dotfiles-private/)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "$0")" && pwd -P)"
+DOTFILES_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PRIVATE_DIR="${DOTFILES_PRIVATE:-$(dirname "$DOTFILES_DIR")/dotfiles-private}"
+
+dry_run=0
+clean=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run|-n) dry_run=1; shift ;;
+        --clean) clean=1; shift ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+if [[ ! -d "$PRIVATE_DIR" ]]; then
+    echo "Error: Private repo not found at: $PRIVATE_DIR"
+    echo "Clone it or set DOTFILES_PRIVATE env var."
+    exit 1
+fi
+
+if [[ $clean -eq 1 ]]; then
+    echo "Cleaning symlinks pointing to $PRIVATE_DIR..."
+    while read -r link; do
+        target=$(readlink "$link")
+        if [[ "$target" == "$PRIVATE_DIR"* ]]; then
+            if [[ $dry_run -eq 1 ]]; then
+                echo "  (DRY RUN) remove: ${link#$DOTFILES_DIR/}"
+            else
+                rm "$link"
+                echo "  removed: ${link#$DOTFILES_DIR/}"
+            fi
+        fi
+    done < <(find "$DOTFILES_DIR" -type l 2>/dev/null)
+    exit 0
+fi
+
+echo "Linking private files from $PRIVATE_DIR..."
+linked=0
+skipped=0
+while read -r src; do
+    rel="${src#$PRIVATE_DIR/}"
+    dest="$DOTFILES_DIR/$rel"
+
+    if [[ -e "$dest" && ! -L "$dest" ]]; then
+        echo "  SKIP (real file exists): $rel"
+        skipped=$((skipped + 1))
+        continue
+    fi
+
+    if [[ $dry_run -eq 1 ]]; then
+        echo "  (DRY RUN) link: $rel"
+    else
+        mkdir -p "$(dirname "$dest")"
+        ln -sf "$src" "$dest"
+        echo "  linked: $rel"
+    fi
+    linked=$((linked + 1))
+done < <(find "$PRIVATE_DIR" -type f -not -path '*/.git/*' | sort)
+
+echo "Done. Linked: $linked, Skipped: $skipped"
