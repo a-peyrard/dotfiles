@@ -1,0 +1,14 @@
+[ui]
+paginate = always
+graphnodetemplate = {label(ifeq(graphnode, '@', 'graphnode.current', ifeq(graphnode, 'x', 'graphnode.obsolete', 'graphnode.default')), graphnode)}
+
+[pager]
+pager = delta
+
+[isl]
+submitAsDraft = false
+
+[color]
+graphnode.current = brightred bold
+graphnode.obsolete = brightblack
+graphnode.default = blue
