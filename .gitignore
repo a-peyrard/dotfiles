@@ -7,3 +7,9 @@ links/.vim/swaps
 *.private
 destinations.private
 bundles/**/*.private
+
+# Private repo symlinks (created by dotfiles-private-link)
+links/.private-bin/*
+!links/.private-bin/.gitkeep
+lib/
+userscripts/
