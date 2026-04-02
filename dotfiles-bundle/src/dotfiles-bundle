@@ -6,13 +6,14 @@ Usage:
     dotfiles-bundle list                     List available bundles and destinations
     dotfiles-bundle show <name>              Show bundle contents
     dotfiles-bundle build <name>             Build bundle tarball
-    dotfiles-bundle deploy <name> [dest]     Build and deploy to destination
-    dotfiles-bundle pull <name> <dest>       Sync changes from remote
+    dotfiles-bundle deploy <name>            Preview deployment (--apply to deploy)
+    dotfiles-bundle pull <name>              Show remote changes (--apply to write back)
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -278,6 +279,17 @@ class BundleAddition:
     target_path: str  # Target relative path (with .add stripped)
     is_directory: bool  # Whether this is a directory addition
     private: bool  # Is this a private addition?
+
+
+@dataclass
+class FileProvenance:
+    """Tracks where a deployed file came from, for reverse mapping in pull."""
+
+    deployed_path: str          # e.g., ".config/nvim/lua/plugins/lsp.lua"
+    source_type: str            # "links", "links-in-depth", "addition", "override"
+    source_path: Path           # absolute path to the source file
+    has_overrides: bool         # True if composite (prepend/append) - can't auto-apply
+    override_mode: str | None   # "add", "replace", or None
 
 
 # ============================================================================
@@ -1086,6 +1098,134 @@ class Deployer:
 
         return result.returncode == 0, synced
 
+    def pull(self, dest_dir: Path, files_from: Path) -> bool:
+        """Pull specific files from remote to local directory.
+
+        Args:
+            dest_dir: Local directory to pull files into
+            files_from: Path to file listing relative paths to pull
+
+        Returns:
+            True if rsync succeeded
+        """
+        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+
+        source = self.destination.target
+        if not source.endswith("/"):
+            source += "/"
+
+        cmd = ["rsync", "-azc", f"--files-from={files_from}"]
+
+        if ssh_opts:
+            cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+
+        cmd.extend([source, f"{dest_dir}/"])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and result.stderr:
+            print(f"rsync error: {result.stderr.strip()}", file=sys.stderr)
+        return result.returncode == 0
+
+
+# ============================================================================
+# Provenance & Remote Change Detection
+# ============================================================================
+
+
+def build_provenance_map(
+    bundle_name: str, files: list[ResolvedFile], override_manager: OverrideManager
+) -> dict[str, FileProvenance]:
+    """Build a map of deployed file paths to their source provenance.
+
+    Used by pull to know where to write remote changes back to.
+    """
+    provenance: dict[str, FileProvenance] = {}
+
+    for resolved in files:
+        overrides = override_manager.find_overrides(bundle_name, resolved.relative_path)
+
+        if not overrides:
+            provenance[resolved.relative_path] = FileProvenance(
+                deployed_path=resolved.relative_path,
+                source_type=resolved.source_type,
+                source_path=resolved.source_path,
+                has_overrides=False,
+                override_mode=None,
+            )
+        elif len(overrides) == 1 and overrides[0].mode == "replace":
+            provenance[resolved.relative_path] = FileProvenance(
+                deployed_path=resolved.relative_path,
+                source_type="override",
+                source_path=overrides[0].path,
+                has_overrides=False,
+                override_mode="replace",
+            )
+        else:
+            # Composite: prepend, append, merge, or multiple overrides
+            provenance[resolved.relative_path] = FileProvenance(
+                deployed_path=resolved.relative_path,
+                source_type=resolved.source_type,
+                source_path=resolved.source_path,
+                has_overrides=True,
+                override_mode=None,
+            )
+
+    # Additions (overwrite regular files if overlap, matching PackageBuilder behavior)
+    additions = override_manager.find_additions(bundle_name)
+    for addition in additions:
+        if addition.is_directory:
+            for src_file in addition.source_path.rglob("*"):
+                if src_file.is_file():
+                    rel = src_file.relative_to(addition.source_path)
+                    deployed = str(Path(addition.target_path) / rel)
+                    provenance[deployed] = FileProvenance(
+                        deployed_path=deployed,
+                        source_type="addition",
+                        source_path=src_file,
+                        has_overrides=False,
+                        override_mode="add",
+                    )
+        else:
+            provenance[addition.target_path] = FileProvenance(
+                deployed_path=addition.target_path,
+                source_type="addition",
+                source_path=addition.source_path,
+                has_overrides=False,
+                override_mode="add",
+            )
+
+    return provenance
+
+
+def _check_remote_changes(
+    deployer: Deployer, package_dir: Path, provenance: dict[str, FileProvenance]
+) -> list[str] | None:
+    """Check which files on remote differ from local package.
+
+    Returns list of changed file paths, or None if the check failed.
+    """
+    with tempfile.TemporaryDirectory() as pull_tmp:
+        files_list = Path(pull_tmp) / "files.txt"
+        file_paths = sorted(provenance.keys())
+        files_list.write_text("\n".join(file_paths) + "\n")
+
+        remote_dir = Path(pull_tmp) / "remote"
+        remote_dir.mkdir()
+
+        if not deployer.pull(remote_dir, files_list):
+            return None
+
+        changed = []
+        for fp in file_paths:
+            local = package_dir / fp
+            remote = remote_dir / fp
+            if not remote.exists() or not local.exists():
+                continue
+            if local.read_bytes() != remote.read_bytes():
+                changed.append(fp)
+
+        return changed
+
 
 # ============================================================================
 # Commands
@@ -1234,25 +1374,34 @@ def cmd_deploy(args):
             builder._generate_install_script(package_dir)
             builder._generate_readme(package_dir)
 
-        # Preview with rsync dry-run (skip if --yes to avoid double auth)
         deployer = Deployer(dest)
 
-        if args.yes:
-            # Skip preview, deploy directly
-            print("\nDeploying...")
-            success, synced = deployer.deploy(package_dir)
-            if success:
-                if synced:
-                    print(f"\n{len(synced)} file(s) synced:")
-                    for f in synced:
-                        info(f)
-                else:
-                    print("No changes - already up to date.")
-                print("\nDeployment complete!")
-            else:
-                die("Deployment failed")
-            return
+        # -y/--yes implies --apply
+        do_apply = args.apply or args.yes
 
+        # Pre-deploy remote change check (unless --force)
+        if not args.force:
+            provenance = build_provenance_map(bundle_name, files, builder.override_manager)
+            print("\nChecking remote for changes...")
+            remote_changes = _check_remote_changes(deployer, package_dir, provenance)
+
+            if remote_changes is None:
+                print(f"  {Color.YELLOW}Could not check remote (connection failed){Color.RESET}")
+            elif remote_changes:
+                print(f"\n{Color.YELLOW}Warning: {len(remote_changes)} file(s) modified on remote:{Color.RESET}")
+                for f in remote_changes:
+                    info(f)
+                print(f"\nThese will be overwritten by deploy.")
+                print(f"Run '{Color.CYAN}dotfiles-bundle pull {bundle_name}{Color.RESET}' to review/save them.")
+                if do_apply and not args.yes:
+                    response = input("\nContinue with deploy? [y/N]: ").strip().lower()
+                    if response != "y":
+                        print("Aborted.")
+                        return
+            else:
+                print("  No remote changes detected.")
+
+        # Preview
         header("Preview (rsync --dry-run):")
         changes, unchanged = deployer.preview(package_dir)
 
@@ -1280,30 +1429,340 @@ def cmd_deploy(args):
 
         print(f"\n{len(changes)} files will be synced to {dest.target}")
 
-        # Dry-run mode: exit after preview
-        if args.dry_run:
-            print("\nDry-run complete. No changes were made.")
+        if not do_apply:
+            print(f"\nRun with {Color.CYAN}--apply{Color.RESET} to deploy.")
             return
 
-        # Confirm (--yes already handled above with early return)
-        response = input("\nProceed? [y/N]: ").strip().lower()
-        if response == "y":
-            print("\nDeploying...")
-            success, synced = deployer.deploy(package_dir)
-            if success:
-                if synced:
-                    print(f"\n{len(synced)} file(s) synced.")
-                print("Deployment complete!")
+        # Confirm (unless -y)
+        if not args.yes:
+            response = input("\nProceed? [y/N]: ").strip().lower()
+            if response != "y":
+                print("Aborted.")
+                return
+
+        print("\nDeploying...")
+        success, synced = deployer.deploy(package_dir)
+        if success:
+            if synced:
+                print(f"\n{len(synced)} file(s) synced.")
             else:
-                die("Deployment failed")
+                print("No changes - already up to date.")
+            print("Deployment complete!")
         else:
-            print("Aborted.")
+            die("Deployment failed")
+
+
+def _prompt_new_file_placement(rel_path: str, bundle_name: str) -> str:
+    """Prompt user for where to place a new remote file.
+
+    Returns: 'private', 'public', 'base', or 'skip'
+    """
+    print(f"\n  {Color.CYAN}{rel_path}{Color.RESET}")
+    print(f"    [1] bundle private  ({Color.DIM}bundles/{bundle_name}/...add.private{Color.RESET})")
+    print(f"    [2] bundle public   ({Color.DIM}bundles/{bundle_name}/...add{Color.RESET})")
+    print(f"    [3] base public     ({Color.DIM}links/{rel_path}{Color.RESET})")
+    print(f"    [s] skip")
+    while True:
+        choice = input("    Choice [1]: ").strip().lower() or "1"
+        if choice in ("1", "2", "3", "s"):
+            return {"1": "private", "2": "public", "3": "base", "s": "skip"}[choice]
+        print("    Invalid choice. Enter 1, 2, 3, or s.")
+
+
+def _place_new_file(
+    rel_path: str, content: bytes, placement: str, bundle_name: str, mode: int | None = None
+) -> bool:
+    """Place a new file according to user's choice. Returns True on success."""
+    private_dir = Path(os.environ.get("DOTFILES_PRIVATE", str(REPO_ROOT.parent / "dotfiles-private")))
+
+    if placement == "private":
+        if not private_dir.exists():
+            print(f"    {Color.YELLOW}Private repo not found at {private_dir}{Color.RESET}")
+            return False
+
+        # Write to private repo
+        private_path = private_dir / "bundles" / bundle_name / f"{rel_path}.add.private"
+        private_path.parent.mkdir(parents=True, exist_ok=True)
+        private_path.write_bytes(content)
+        if mode is not None:
+            private_path.chmod(mode)
+
+        # Create absolute symlink in public repo (matches dotfiles-private-link convention)
+        symlink_path = REPO_ROOT / "bundles" / bundle_name / f"{rel_path}.add.private"
+        symlink_path.parent.mkdir(parents=True, exist_ok=True)
+        if symlink_path.exists() or symlink_path.is_symlink():
+            symlink_path.unlink()
+        symlink_path.symlink_to(private_path)
+
+        try:
+            disp = symlink_path.relative_to(REPO_ROOT)
+        except ValueError:
+            disp = symlink_path
+        info(f"{Color.GREEN}Placed:{Color.RESET} {rel_path} -> {disp} (private)")
+        return True
+
+    elif placement == "public":
+        add_path = REPO_ROOT / "bundles" / bundle_name / f"{rel_path}.add"
+        add_path.parent.mkdir(parents=True, exist_ok=True)
+        add_path.write_bytes(content)
+        if mode is not None:
+            add_path.chmod(mode)
+
+        try:
+            disp = add_path.relative_to(REPO_ROOT)
+        except ValueError:
+            disp = add_path
+        info(f"{Color.GREEN}Placed:{Color.RESET} {rel_path} -> {disp}")
+        return True
+
+    elif placement == "base":
+        base_path = LINKS_DIR / rel_path
+        base_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path.write_bytes(content)
+        if mode is not None:
+            base_path.chmod(mode)
+
+        try:
+            disp = base_path.relative_to(REPO_ROOT)
+        except ValueError:
+            disp = base_path
+        info(f"{Color.GREEN}Placed:{Color.RESET} {rel_path} -> {disp}")
+        return True
+
+    return False
 
 
 def cmd_pull(args):
     """Sync changes FROM server back to local."""
-    print("Pull command not yet implemented.")
-    print("This will sync changes from the remote server back to your local overrides.")
+    bundle_name = args.name
+
+    # Load destination
+    dest = load_destination_for_bundle(bundle_name)
+    if not dest:
+        die(
+            f"No destination configured for bundle '{bundle_name}'.\n"
+            f"Create bundles/{bundle_name}/destination.private with:\n"
+            f"  target = \"user@host:~\"\n"
+            f"  ssh_opts = \"\"  # optional"
+        )
+
+    print(f"\nPulling from: {dest.target}")
+    print(f"Bundle: {bundle_name}")
+
+    # Build local package (same as deploy)
+    resolver = BundleResolver()
+    config = resolver.resolve(bundle_name)
+    file_resolver = FileResolver()
+    files = file_resolver.resolve_bundle(config)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Build local package
+        local_dir = Path(temp_dir) / "local"
+        local_dir.mkdir()
+
+        builder = PackageBuilder(bundle_name, config)
+        for resolved in files:
+            builder._copy_file(resolved, local_dir)
+        builder._copy_additions(local_dir)
+
+        # Build provenance map
+        provenance = build_provenance_map(bundle_name, files, builder.override_manager)
+
+        # Create files-from list: provenance files + directory patterns for new file detection
+        files_list = Path(temp_dir) / "files.txt"
+        file_paths = sorted(provenance.keys())
+        dir_patterns = [p.rstrip("/") for p in config.files_include if p.endswith("/")]
+        all_entries = sorted(set(file_paths) | set(dir_patterns))
+        files_list.write_text("\n".join(all_entries) + "\n")
+
+        # Pull from remote
+        remote_dir = Path(temp_dir) / "remote"
+        remote_dir.mkdir()
+
+        deployer = Deployer(dest)
+        print("\nPulling remote files...")
+        if not deployer.pull(remote_dir, files_list):
+            die("Failed to pull from remote")
+
+        # Compare known files for changes
+        changed_files = []
+        for fp in file_paths:
+            local_file = local_dir / fp
+            remote_file = remote_dir / fp
+            if not remote_file.exists() or not local_file.exists():
+                continue
+            if local_file.read_bytes() != remote_file.read_bytes():
+                changed_files.append(fp)
+
+        # Detect new remote files (in pulled directories but not in provenance)
+        new_remote_files = []
+        for remote_file in sorted(remote_dir.rglob("*")):
+            if not remote_file.is_file():
+                continue
+            rel = str(remote_file.relative_to(remote_dir))
+            if rel in provenance:
+                continue
+            if not any(glob_match(p, rel) for p in config.files_include):
+                continue
+            if any(glob_match(ex, rel) for ex in config.files_exclude):
+                continue
+            new_remote_files.append(rel)
+
+        if not changed_files and not new_remote_files:
+            print("\nNo changes detected. Remote matches local.")
+            return
+
+        # --- Display changed files ---
+        can_apply = []
+        cannot_apply = []
+        if changed_files:
+            for fp in changed_files:
+                prov = provenance.get(fp)
+                if prov and not prov.has_overrides:
+                    can_apply.append(fp)
+                else:
+                    cannot_apply.append(fp)
+
+            print(f"\n{len(changed_files)} file(s) differ on remote:")
+            for fp in changed_files:
+                prov = provenance.get(fp)
+                if prov and not prov.has_overrides:
+                    try:
+                        source_rel = prov.source_path.relative_to(REPO_ROOT)
+                    except ValueError:
+                        source_rel = prov.source_path
+                    marker = f" -> {Color.DIM}{source_rel}{Color.RESET}"
+                else:
+                    marker = f" {Color.DIM}(composite, manual only){Color.RESET}"
+                info(f"{Color.YELLOW}{fp}{Color.RESET}{marker}")
+
+        # --- Display new files ---
+        if new_remote_files:
+            print(f"\n{len(new_remote_files)} new file(s) on remote:")
+            for fp in new_remote_files:
+                info(f"{Color.GREEN}{fp}{Color.RESET} {Color.DIM}(new){Color.RESET}")
+
+        # --- Show diffs if verbose ---
+        if args.verbose:
+            for fp in changed_files:
+                local_file = local_dir / fp
+                remote_file = remote_dir / fp
+                print(f"\n{'─' * 60}")
+                print(f"{Color.BOLD}{fp}{Color.RESET} {Color.DIM}(changed){Color.RESET}")
+                print(f"{'─' * 60}")
+                try:
+                    local_lines = local_file.read_text().splitlines(keepends=True)
+                    remote_lines = remote_file.read_text().splitlines(keepends=True)
+                    diff = difflib.unified_diff(
+                        local_lines, remote_lines,
+                        fromfile=f"local/{fp}",
+                        tofile=f"remote/{fp}",
+                    )
+                    diff_text = "".join(diff)
+                    if diff_text:
+                        for line in diff_text.splitlines():
+                            if line.startswith("+") and not line.startswith("+++"):
+                                print(f"  {Color.GREEN}{line}{Color.RESET}")
+                            elif line.startswith("-") and not line.startswith("---"):
+                                print(f"  {Color.MAGENTA}{line}{Color.RESET}")
+                            else:
+                                print(f"  {line}")
+                    else:
+                        print(f"  {Color.DIM}(no text diff available){Color.RESET}")
+                except UnicodeDecodeError:
+                    print(f"  {Color.DIM}(binary file){Color.RESET}")
+
+            for fp in new_remote_files:
+                remote_file = remote_dir / fp
+                print(f"\n{'─' * 60}")
+                print(f"{Color.BOLD}{fp}{Color.RESET} {Color.DIM}(new){Color.RESET}")
+                print(f"{'─' * 60}")
+                try:
+                    for line in remote_file.read_text().splitlines():
+                        print(f"  {Color.GREEN}+{line}{Color.RESET}")
+                except UnicodeDecodeError:
+                    print(f"  {Color.DIM}(binary file){Color.RESET}")
+
+        # -y/--yes implies --apply
+        do_apply = args.apply or args.yes
+
+        if not do_apply:
+            hints = []
+            if not args.verbose:
+                hints.append(f"Run with {Color.CYAN}-v{Color.RESET} to see diffs.")
+            hints.append(f"Run with {Color.CYAN}--apply{Color.RESET} to write changes back to source files.")
+            print()
+            for h in hints:
+                print(h)
+            return
+
+        # --- Apply changed files ---
+        applied = 0
+        if changed_files:
+            if cannot_apply:
+                print(f"\n{Color.YELLOW}Skipping {len(cannot_apply)} composite file(s) (manual apply only):{Color.RESET}")
+                for fp in cannot_apply:
+                    info(fp)
+
+            if can_apply:
+                if not args.yes:
+                    print(f"\n{len(can_apply)} changed file(s) to write back:")
+                    for fp in can_apply:
+                        prov = provenance[fp]
+                        try:
+                            source_rel = prov.source_path.relative_to(REPO_ROOT)
+                        except ValueError:
+                            source_rel = prov.source_path
+                        info(f"{fp} -> {source_rel}")
+
+                    response = input("\nApply changed files? [y/N]: ").strip().lower()
+                    if response != "y":
+                        if not new_remote_files:
+                            print("Aborted.")
+                            return
+                        print("Skipped changed files.")
+                        can_apply = []
+
+                for fp in can_apply:
+                    prov = provenance[fp]
+                    remote_file = remote_dir / fp
+                    target = prov.source_path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(remote_file.read_bytes())
+                    applied += 1
+                    try:
+                        source_rel = prov.source_path.relative_to(REPO_ROOT)
+                    except ValueError:
+                        source_rel = prov.source_path
+                    info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {source_rel}")
+
+        # --- Place new files ---
+        placed = 0
+        if new_remote_files:
+            if args.yes:
+                print(f"\n{Color.YELLOW}Skipping {len(new_remote_files)} new file(s) — interactive placement required, run without -y{Color.RESET}")
+            else:
+                print(f"\nPlacing {len(new_remote_files)} new file(s):")
+                for fp in new_remote_files:
+                    remote_file = remote_dir / fp
+                    content = remote_file.read_bytes()
+                    mode = remote_file.stat().st_mode
+                    placement = _prompt_new_file_placement(fp, bundle_name)
+                    if placement == "skip":
+                        continue
+                    if _place_new_file(fp, content, placement, bundle_name, mode=mode):
+                        placed += 1
+
+        # Summary
+        parts = []
+        if applied:
+            parts.append(f"{applied} changed file(s) applied")
+        if placed:
+            parts.append(f"{placed} new file(s) placed")
+        if cannot_apply:
+            parts.append(f"{len(cannot_apply)} composite file(s) skipped")
+        if parts:
+            print(f"\n{'. '.join(parts)}.")
 
 
 # ============================================================================
@@ -1338,15 +1797,18 @@ def main():
     # deploy
     p_deploy = subparsers.add_parser("deploy", help="Build and deploy")
     p_deploy.add_argument("name", help="Bundle name")
-    p_deploy.add_argument("-n", "--dry-run", action="store_true", help="Preview only, don't prompt or deploy")
     p_deploy.add_argument("-v", "--verbose", action="store_true", help="Show all files, not just first 20")
-    p_deploy.add_argument("-y", "--yes", action="store_true", help="Skip preview and confirmation, deploy directly")
+    p_deploy.add_argument("--apply", action="store_true", help="Deploy to destination (default: preview only)")
+    p_deploy.add_argument("-y", "--yes", action="store_true", help="Deploy without confirmation (implies --apply)")
+    p_deploy.add_argument("--force", action="store_true", help="Skip remote change check")
     p_deploy.set_defaults(func=cmd_deploy)
 
     # pull
     p_pull = subparsers.add_parser("pull", help="Sync changes from remote")
     p_pull.add_argument("name", help="Bundle name")
-    p_pull.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    p_pull.add_argument("-v", "--verbose", action="store_true", help="Show diffs for changed files")
+    p_pull.add_argument("--apply", action="store_true", help="Write changes back to source files (default: show only)")
+    p_pull.add_argument("-y", "--yes", action="store_true", help="Apply without confirmation (implies --apply)")
     p_pull.set_defaults(func=cmd_pull)
 
     args = parser.parse_args()
