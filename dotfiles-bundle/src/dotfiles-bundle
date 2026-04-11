@@ -1110,8 +1110,16 @@ class Deployer:
         """
         ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
 
+        # Build source path — rsync with --files-from treats ~ literally,
+        # so use empty path after : (defaults to home directory)
         source = self.destination.target
-        if not source.endswith("/"):
+        if ":" in source:
+            host, path = source.rsplit(":", 1)
+            if path.rstrip("/") == "~":
+                source = host + ":"
+            elif not path.endswith("/"):
+                source += "/"
+        elif not source.endswith("/"):
             source += "/"
 
         cmd = ["rsync", "-azc", f"--files-from={files_from}"]
