@@ -7,6 +7,7 @@ target = "linux"
 include = [
     ".aliases",
     ".bin/",
+    ".config/devbridge/",
     ".config/nvim/",
     ".config/starship.toml",
     ".env.d/common/",
@@ -33,7 +34,7 @@ exclude = [
     ".bin/dotfiles-package",
     ".bin/fix_virtualenv",
     ".bin/local-tmux",
-    ".bin/notify",
+    # ".bin/notify",  # now works on devserver via devbridge
     ".bin/pushn",
     ".bin/test-go-workspace",
     ".bin/topic-size",
@@ -45,6 +46,7 @@ exclude = [
     # Not available on dev server
     ".env.d/common/14_docker.env",
     ".env.d/common/33_pyenv.env",
+    ".config/devbridge/handlers/notify",
     ".config/nvim/lua/plugins/codeium.lua",
 ]
 

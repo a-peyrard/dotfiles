@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# devbridge handler: show a macOS notification via osascript
+# Args (JSON stdin): {"message": "...", "title": "..."}
+
+set -euo pipefail
+
+read -r JSON
+MSG=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('message',''))" <<< "$JSON")
+TITLE=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('title','Notification'))" <<< "$JSON")
+
+osascript -e "display notification \"$MSG\" with title \"$TITLE\""
+echo "Notification sent: $TITLE — $MSG"

@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 
-title=${2}
-if [ -z ${title} ]; then
-	title="Notification"
+message="${1}"
+title="${2:-Notification}"
+
+if [ -z "$message" ]; then
+	echo "Usage: notify <message> [title]"
+	exit 1
 fi
 
-osascript -e "display notification \"${1}\" with title \"${title}\""
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	osascript -e "display notification \"${message}\" with title \"${title}\""
+else
+	devbridge send notify message="$message" title="$title"
+fi
