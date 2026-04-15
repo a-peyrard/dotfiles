@@ -1001,6 +1001,48 @@ class Deployer:
 
     def __init__(self, destination: Destination):
         self.destination = destination
+        self._control_path: str | None = None
+        self._control_host: str | None = None
+
+    def start_multiplexing(self):
+        """Start an SSH ControlMaster connection for reuse across commands."""
+        target = self.destination.target
+        if ":" in target:
+            host = target.rsplit(":", 1)[0]
+        else:
+            host = target
+
+        self._control_host = host
+        self._control_path = f"/tmp/dotfiles-bundle-ssh-{os.getpid()}"
+
+        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        cmd = [
+            "ssh", "-fNM",
+            "-o", f"ControlPath={self._control_path}",
+            "-o", "ControlPersist=60",
+        ] + ssh_opts + [host]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            self._control_path = None
+            return False
+        return True
+
+    def stop_multiplexing(self):
+        """Close the SSH ControlMaster connection."""
+        if self._control_path and self._control_host:
+            subprocess.run(
+                ["ssh", "-O", "exit", "-o", f"ControlPath={self._control_path}", self._control_host],
+                capture_output=True, text=True,
+            )
+            self._control_path = None
+
+    def _ssh_opts(self) -> list[str]:
+        """Build SSH options list, including ControlMaster if active."""
+        opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        if self._control_path:
+            opts.extend(["-o", f"ControlPath={self._control_path}"])
+        return opts
 
     def preview(self, package_dir: Path) -> tuple[list[str], list[str]]:
         """Preview what would be changed using rsync dry-run.
@@ -1008,7 +1050,7 @@ class Deployer:
         Returns:
             Tuple of (changed_files, unchanged_files)
         """
-        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        ssh_opts = self._ssh_opts()
 
         cmd = [
             "rsync",
@@ -1060,7 +1102,7 @@ class Deployer:
         Returns:
             Tuple of (success, list of synced files)
         """
-        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        ssh_opts = self._ssh_opts()
 
         cmd = [
             "rsync",
@@ -1111,7 +1153,7 @@ class Deployer:
         Returns:
             True if rsync succeeded
         """
-        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        ssh_opts = self._ssh_opts()
 
         # Build source path — rsync with --files-from treats ~ literally,
         # so use empty path after : (defaults to home directory)
@@ -1145,7 +1187,7 @@ class Deployer:
         Unlike pull() with --files-from, this properly recurses into directories
         to detect new remote files.
         """
-        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+        ssh_opts = self._ssh_opts()
 
         source = self.destination.target
         if ":" in source:
@@ -1384,11 +1426,7 @@ def build_manifest(
 
 def write_manifest_to_remote(deployer: Deployer, manifest: dict) -> bool:
     """Write manifest JSON to the remote host."""
-    dest = deployer.destination
-    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
-
-    # Extract host from target (user@host:path)
-    target = dest.target
+    target = deployer.destination.target
     if ":" in target:
         host = target.rsplit(":", 1)[0]
     else:
@@ -1396,10 +1434,7 @@ def write_manifest_to_remote(deployer: Deployer, manifest: dict) -> bool:
 
     manifest_json = json.dumps(manifest, indent=2, sort_keys=True)
 
-    cmd = ["ssh"]
-    if ssh_opts:
-        cmd.extend(ssh_opts)
-    cmd.extend([host, f"cat > ~/{MANIFEST_REMOTE_PATH}"])
+    cmd = ["ssh"] + deployer._ssh_opts() + [host, f"cat > ~/{MANIFEST_REMOTE_PATH}"]
 
     result = subprocess.run(cmd, input=manifest_json, capture_output=True, text=True)
     return result.returncode == 0
@@ -1407,19 +1442,13 @@ def write_manifest_to_remote(deployer: Deployer, manifest: dict) -> bool:
 
 def read_manifest_from_remote(deployer: Deployer) -> dict | None:
     """Read manifest JSON from the remote host. Returns None if not found."""
-    dest = deployer.destination
-    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
-
-    target = dest.target
+    target = deployer.destination.target
     if ":" in target:
         host = target.rsplit(":", 1)[0]
     else:
         host = target
 
-    cmd = ["ssh"]
-    if ssh_opts:
-        cmd.extend(ssh_opts)
-    cmd.extend([host, f"cat ~/{MANIFEST_REMOTE_PATH} 2>/dev/null"])
+    cmd = ["ssh"] + deployer._ssh_opts() + [host, f"cat ~/{MANIFEST_REMOTE_PATH} 2>/dev/null"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 or not result.stdout.strip():
@@ -1446,10 +1475,7 @@ def backup_remote_files(deployer: Deployer, changed_files: list[str]) -> str | N
 
     from datetime import datetime, timezone
 
-    dest = deployer.destination
-    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
-
-    target = dest.target
+    target = deployer.destination.target
     if ":" in target:
         host = target.rsplit(":", 1)[0]
     else:
@@ -1471,10 +1497,7 @@ def backup_remote_files(deployer: Deployer, changed_files: list[str]) -> str | N
         f"cd ~/{BACKUP_REMOTE_DIR} && ls -1d */ 2>/dev/null | head -n -{MAX_BACKUPS} | xargs rm -rf 2>/dev/null"
     )
 
-    cmd = ["ssh"]
-    if ssh_opts:
-        cmd.extend(ssh_opts)
-    cmd.extend([host, " && ".join(copy_cmds)])
+    cmd = ["ssh"] + deployer._ssh_opts() + [host, " && ".join(copy_cmds)]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
@@ -1664,6 +1687,9 @@ def cmd_deploy(args):
             builder._generate_readme(package_dir)
 
         deployer = Deployer(dest)
+        multiplexing = deployer.start_multiplexing()
+        if multiplexing:
+            print("  SSH connection established.")
 
         # -y/--yes implies --apply
         do_apply = args.apply or args.yes
@@ -1756,6 +1782,8 @@ def cmd_deploy(args):
             print("Deployment complete!")
         else:
             die("Deployment failed")
+
+        deployer.stop_multiplexing()
 
 
 def _prompt_new_file_placement(rel_path: str, bundle_name: str) -> str:
@@ -1894,6 +1922,9 @@ def cmd_pull(args):
         remote_dir.mkdir()
 
         deployer = Deployer(dest)
+        multiplexing = deployer.start_multiplexing()
+        if multiplexing:
+            print("  SSH connection established.")
         print("\nPulling remote files...")
         all_includes = list(config.files_include) + list(config.runtime_include)
         all_excludes = list(config.files_exclude) + list(config.runtime_exclude)
