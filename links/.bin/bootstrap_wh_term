@@ -1,8 +1,0 @@
-#!/usr/bin/env zsh
-
-cd /opt/dev/betterworks/code/warehouse-engine
-pyenv virtualenvwrapper
-source /Users/augustin/.pyenv/versions/3.10.1/bin/virtualenvwrapper.sh
-workon wh-engine
-export PYTHONPATH="$(pwd)"
-source source-env env.local.private
