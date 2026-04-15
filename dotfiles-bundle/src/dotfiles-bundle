@@ -2555,6 +2555,20 @@ def cmd_pull(args):
             if pull_applied or pull_placed:
                 write_pull_manifest(bundle_name, pull_applied, pull_placed)
 
+            # Update deploy manifest to reflect new local state
+            # This prevents false conflicts on the next deploy/pull
+            if pull_applied or pull_placed:
+                rebuild_dir = Path(temp_dir) / "rebuild"
+                rebuild_dir.mkdir()
+                rebuild_builder = PackageBuilder(bundle_name, config)
+                rebuild_files = file_resolver.resolve_bundle(config)
+                for resolved in rebuild_files:
+                    rebuild_builder._copy_file(resolved, rebuild_dir)
+                rebuild_builder._copy_additions(rebuild_dir)
+                new_manifest = build_manifest(bundle_name, rebuild_files, rebuild_builder.override_manager, rebuild_dir)
+                write_manifest(bundle_name, new_manifest)
+                print(f"  Manifest updated.")
+
 
 # ============================================================================
 # Main
