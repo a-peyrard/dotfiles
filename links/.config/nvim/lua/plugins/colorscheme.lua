@@ -8,13 +8,10 @@ return {
     config = function()
       require("tokyonight").setup({
         style = "storm",
-        transparent = true,
-        styles = {
-          sidebars = "transparent",
-          floats = "transparent",
-        },
+        transparent = false,
         on_colors = function(colors)
           colors.border = colors.orange
+          colors.bg = "#1a1b26"  -- darker background (night variant)
         end,
       })
       vim.cmd([[colorscheme tokyonight-storm]])

@@ -30,18 +30,68 @@ return {
     vim.api.nvim_set_hl(0, "SignifySignDelete", { fg = "#e06c75", bg = "NONE" })
     vim.api.nvim_set_hl(0, "SignifySignChange", { fg = "#e5c07b", bg = "NONE" })
 
+    -- Review mode: toggle diff base between . (uncommitted) and .^ (last commit)
+    local review_state = {
+      review_mode = false,
+      normal_cmd = "hg --config alias.diff=diff diff --color=never --nodates -U0 -- %f",
+      review_cmd = "hg --config alias.diff=diff diff --color=never --nodates -U0 --rev .^ -- %f",
+      normal_diffmode_cmd = "hg cat %f",
+      review_diffmode_cmd = "hg cat --rev .^ %f",
+    }
+    -- Expose for lualine statusline indicator
+    _G.signify_review = review_state
+
+    local function set_vcs_cmds(diff_cmd, diffmode_cmd)
+      local cmds = vim.g.signify_vcs_cmds or {}
+      cmds.hg = diff_cmd
+      vim.g.signify_vcs_cmds = cmds
+
+      local dm_cmds = vim.g.signify_vcs_cmds_diffmode or {}
+      dm_cmds.hg = diffmode_cmd
+      vim.g.signify_vcs_cmds_diffmode = dm_cmds
+    end
+
+    local function toggle_review_mode()
+      review_state.review_mode = not review_state.review_mode
+
+      if review_state.review_mode then
+        set_vcs_cmds(review_state.review_cmd, review_state.review_diffmode_cmd)
+        vim.notify("Signify: Review mode ON (diffing against .^)", vim.log.levels.INFO)
+      else
+        set_vcs_cmds(review_state.normal_cmd, review_state.normal_diffmode_cmd)
+        vim.notify("Signify: Review mode OFF (diffing against .)", vim.log.levels.INFO)
+      end
+
+      vim.cmd("SignifyRefresh")
+    end
+
+    -- Toggle review mode
+    vim.keymap.set("n", "<leader>hc", toggle_review_mode,
+      { desc = "Signify: Toggle review mode (diff .^)" })
+
     -- Additional keymaps for signify-specific features
     vim.keymap.set("n", "<leader>hd", "<cmd>SignifyDiff<cr>", { desc = "Signify: Diff this" })
     vim.keymap.set("n", "<leader>hp", "<cmd>SignifyHunkDiff<cr>", { desc = "Signify: Preview hunk" })
-    vim.keymap.set("n", "<leader>hu", "<cmd>SignifyHunkUndo<cr>", { desc = "Signify: Undo hunk" })
 
-    -- Full file revert for Sapling/Mercurial
+    -- Undo hunk — guarded in review mode
+    vim.keymap.set("n", "<leader>hu", function()
+      if review_state.review_mode then
+        vim.notify("Hunk undo disabled in review mode (would revert to .^ state)", vim.log.levels.WARN)
+        return
+      end
+      vim.cmd("SignifyHunkUndo")
+    end, { desc = "Signify: Undo hunk" })
+
+    -- Full file revert — guarded in review mode
     vim.keymap.set("n", "<leader>hR", function()
+      if review_state.review_mode then
+        vim.notify("File revert disabled in review mode", vim.log.levels.WARN)
+        return
+      end
       local file = vim.fn.expand("%")
-      -- Try Sapling first, then Mercurial
       local cmd = vim.fn.executable("sl") == 1 and "sl revert " or "hg revert "
       vim.fn.system(cmd .. vim.fn.shellescape(file))
-      vim.cmd("edit!")  -- Reload the buffer
+      vim.cmd("edit!")
       vim.notify("Reverted: " .. file, vim.log.levels.INFO)
     end, { desc = "Signify: Revert file" })
 
@@ -50,5 +100,10 @@ return {
       vim.cmd("SignifyListUnstaged")
       vim.cmd("copen")
     end, { desc = "Signify: List all hunks" })
+
+    -- Telescope hunk picker (works in both normal and review mode)
+    vim.keymap.set("n", "<leader>hh", function()
+      require("config.sapling-hunks").open()
+    end, { desc = "Sapling: Browse hunks (telescope)" })
   end,
 }

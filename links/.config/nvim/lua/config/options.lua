@@ -95,7 +95,10 @@ vim.opt.autoindent = true       -- Copy indent from current line when starting n
 -- ============================================================================
 
 -- Better diff mode
-vim.opt.diffopt:append("vertical")  -- Vertical diff splits
+vim.opt.diffopt:append("vertical")      -- Vertical diff splits
+vim.opt.diffopt:append("inline:char")   -- Character-level inline diff (Neovim 0.12+)
+vim.opt.diffopt:append("linematch:60")  -- Better line matching algorithm
+vim.opt.diffopt:append("context:99999") -- Show all lines (no folding)
 
 -- Show invisible characters (IntelliJ-style subtle display)
 vim.opt.list = false
@@ -117,6 +120,26 @@ vim.api.nvim_set_hl(0, "DiagnosticSignInfo", { fg = "#0db9d7", bg = "NONE" })
 vim.api.nvim_set_hl(0, "GitSignsAddNr", { fg = "#98c379", bg = "NONE" })
 vim.api.nvim_set_hl(0, "GitSignsChangeNr", { fg = "#e5c07b", bg = "NONE" })
 vim.api.nvim_set_hl(0, "GitSignsDeleteNr", { fg = "#e06c75", bg = "NONE" })
+
+-- Diff highlights (tokyonight defaults are too subtle with transparent mode)
+local function apply_diff_highlights()
+  vim.api.nvim_set_hl(0, "DiffAdd", { bg = "#1a3320" })       -- pastel green (added)
+  vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#331a1a" })    -- pastel red (deleted)
+  vim.api.nvim_set_hl(0, "DiffChange", { bg = "#2d2d1a" })    -- pastel yellow (changed lines)
+  vim.api.nvim_set_hl(0, "DiffText", { bg = "#5a4a20" })      -- warm yellow (changed text)
+end
+apply_diff_highlights()
+
+-- Satellite scrollbar markers (signify + diff mode)
+vim.api.nvim_set_hl(0, "SatelliteSignifyAdd", { fg = "#98c379" })
+vim.api.nvim_set_hl(0, "SatelliteSignifyChange", { fg = "#61afef" })
+vim.api.nvim_set_hl(0, "SatelliteSignifyDelete", { fg = "#5c6370" })
+vim.api.nvim_set_hl(0, "SatelliteDiffAdd", { fg = "#98c379" })
+vim.api.nvim_set_hl(0, "SatelliteDiffChange", { fg = "#e5c07b" })
+vim.api.nvim_set_hl(0, "SatelliteDiffDelete", { fg = "#e06c75" })
+vim.api.nvim_set_hl(0, "SatelliteReviewNote", { fg = "#e0af68" })
+vim.api.nvim_set_hl(0, "ReviewNoteVirtText", { fg = "#e0af68", italic = true })
+vim.api.nvim_set_hl(0, "ReviewNoteSign", { fg = "#e0af68", bg = "NONE" })
 
 -- Configure diagnostic display (Neovim 0.10+ API)
 vim.diagnostic.config({
@@ -168,6 +191,18 @@ vim.api.nvim_create_autocmd("ColorScheme", {
     vim.api.nvim_set_hl(0, "GitSignsAddNr", { fg = "#98c379", bg = "NONE" })
     vim.api.nvim_set_hl(0, "GitSignsChangeNr", { fg = "#e5c07b", bg = "NONE" })
     vim.api.nvim_set_hl(0, "GitSignsDeleteNr", { fg = "#e06c75", bg = "NONE" })
+    -- Diff highlights
+    apply_diff_highlights()
+    -- Satellite scrollbar markers (signify + diff)
+    vim.api.nvim_set_hl(0, "SatelliteSignifyAdd", { fg = "#98c379" })
+    vim.api.nvim_set_hl(0, "SatelliteSignifyChange", { fg = "#61afef" })
+    vim.api.nvim_set_hl(0, "SatelliteSignifyDelete", { fg = "#5c6370" })
+    vim.api.nvim_set_hl(0, "SatelliteDiffAdd", { fg = "#98c379" })
+    vim.api.nvim_set_hl(0, "SatelliteDiffChange", { fg = "#e5c07b" })
+    vim.api.nvim_set_hl(0, "SatelliteDiffDelete", { fg = "#e06c75" })
+    vim.api.nvim_set_hl(0, "SatelliteReviewNote", { fg = "#e0af68" })
+    vim.api.nvim_set_hl(0, "ReviewNoteVirtText", { fg = "#e0af68", italic = true })
+    vim.api.nvim_set_hl(0, "ReviewNoteSign", { fg = "#e0af68", bg = "NONE" })
   end,
 })
 

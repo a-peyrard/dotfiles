@@ -13,7 +13,14 @@ return {
     },
     sections = {
       lualine_a = { "mode" },
-      lualine_b = { "branch", "diff", "diagnostics" },
+      lualine_b = {
+        "branch", "diff", "diagnostics",
+        {
+          function() return "REVIEW" end,
+          cond = function() return _G.signify_review and _G.signify_review.review_mode end,
+          color = { fg = "#e5c07b", gui = "bold" },
+        },
+      },
       lualine_c = {
         { "filename", path = 1, shorting_target = 40 }
       },

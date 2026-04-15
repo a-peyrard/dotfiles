@@ -20,7 +20,7 @@ return {
         -- 2. VCS changes - thin colored bar (left of numbers)
         {
           sign = {
-            name = { "GitSigns", "Signify" },
+            name = { "GitSigns", "Signify", "ClaudeHL", "ReviewNote" },
             maxwidth = 1,
             colwidth = 1,
             auto = false,
