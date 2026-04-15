@@ -5,15 +5,27 @@ for p in /opt/homebrew/bin /usr/local/bin; do
   [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
 done
 
-# Usage: toggle-app.sh <app-name> <app-id> [hidden-workspace]
+# Usage: toggle-app.sh <app-name> <app-id> [hidden-workspace] [--show]
 # Example: toggle-app.sh Ghostty com.mitchellh.ghostty S
+# Example: toggle-app.sh Ghostty com.mitchellh.ghostty S --show
 
-APP_NAME="$1"
-APP_ID="$2"
-HIDDEN_WS="${3:-S}"  # Default to S if not provided
+# Parse --show flag
+SHOW_ONLY=false
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--show" ]; then
+        SHOW_ONLY=true
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+APP_NAME="${ARGS[0]}"
+APP_ID="${ARGS[1]}"
+HIDDEN_WS="${ARGS[2]:-S}"  # Default to S if not provided
 
 if [ -z "$APP_NAME" ] || [ -z "$APP_ID" ]; then
-    echo "Usage: $0 <app-name> <app-id> [hidden-workspace]"
+    echo "Usage: $0 <app-name> <app-id> [hidden-workspace] [--show]"
     exit 1
 fi
 
@@ -50,7 +62,11 @@ else
     CURRENT_WS=$(aerospace list-workspaces --monitor all --visible --format '%{monitor-is-main}|%{workspace}'|grep true|cut -d'|' -f2)
     echo "$(date): Current workspace on main: $CURRENT_WS" >> "$LOG"
     
-    if [ "$APP_WS" = "$CURRENT_WS" ]; then
+    if [ "$APP_WS" = "$CURRENT_WS" ] && [ "$SHOW_ONLY" = true ]; then
+        # --show mode: app is already here, no-op
+        echo "$(date): --show: $APP_NAME already on current workspace, focusing" >> "$LOG"
+        aerospace focus --window-id "$APP_WINDOW"
+    elif [ "$APP_WS" = "$CURRENT_WS" ]; then
         # App is here, hide all windows
         echo "$(date): Hiding all $APP_NAME windows (moving to $HIDDEN_WS)" >> "$LOG"
 
