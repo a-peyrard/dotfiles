@@ -108,3 +108,5 @@ keybind = cmd+right=next_tab
 # This ensures FA, Powerline, and other icon ranges use the Nerd Font
 font-codepoint-map = U+E000-U+F8FF=MesloLGM Nerd Font
 font-codepoint-map = U+F0000-U+FFFFF=MesloLGM Nerd Font
+
+desktop-notifications = true
