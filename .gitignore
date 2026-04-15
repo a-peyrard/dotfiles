@@ -8,6 +8,8 @@ links/.vim/swaps
 destinations.private
 bundles/**/*.private
 bundles/**/.manifest.json
+bundles/**/.manifests/
+bundles/**/.deploy.log
 
 # Private repo symlinks (created by dotfiles-private-link)
 links/.private-bin/*

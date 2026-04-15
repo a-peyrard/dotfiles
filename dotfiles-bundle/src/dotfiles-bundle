@@ -1428,16 +1428,35 @@ def build_manifest(
     return manifest
 
 
+def _manifests_dir(bundle_name: str) -> Path:
+    """Return the directory for manifest history."""
+    return BUNDLES_DIR / bundle_name / ".manifests"
+
+
 def _manifest_path(bundle_name: str) -> Path:
-    """Return local path for the bundle's deployment manifest."""
+    """Return local path for the bundle's current deployment manifest."""
     return BUNDLES_DIR / bundle_name / MANIFEST_FILENAME
 
 
+def _log_path(bundle_name: str) -> Path:
+    """Return local path for the bundle's deploy/pull log."""
+    return BUNDLES_DIR / bundle_name / ".deploy.log"
+
+
 def write_manifest(bundle_name: str, manifest: dict) -> bool:
-    """Write manifest JSON to the local bundle directory."""
+    """Write manifest JSON and keep historical copies."""
     path = _manifest_path(bundle_name)
+    manifest_json = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     try:
-        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        path.write_text(manifest_json)
+
+        # Save timestamped copy
+        history_dir = _manifests_dir(bundle_name)
+        history_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = manifest.get("deployed_at", "unknown").replace(":", "")
+        history_path = history_dir / f"{timestamp}.json"
+        history_path.write_text(manifest_json)
+
         return True
     except OSError:
         return False
@@ -1452,6 +1471,20 @@ def read_manifest(bundle_name: str) -> dict | None:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def log_operation(bundle_name: str, action: str, details: str = ""):
+    """Append a line to the deploy/pull log."""
+    from datetime import datetime, timezone
+
+    path = _log_path(bundle_name)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{timestamp}  {action:<8}  {details}\n"
+    try:
+        with open(path, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 # ============================================================================
@@ -1719,6 +1752,7 @@ def cmd_deploy(args):
             # Still write manifest (config may have changed)
             manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
             write_manifest(bundle_name, manifest)
+            log_operation(bundle_name, "deploy", "no changes")
             return
 
         # Show unchanged summary first
@@ -1776,6 +1810,7 @@ def cmd_deploy(args):
             else:
                 print(f"  {Color.YELLOW}Failed to write manifest{Color.RESET}")
 
+            log_operation(bundle_name, "deploy", f"{len(synced)} file(s) synced")
             print("Deployment complete!")
         else:
             die("Deployment failed")
@@ -1989,6 +2024,7 @@ def cmd_pull(args):
 
         if not changed_files and not new_remote_files and not deleted_files:
             print("\nNo changes detected. Remote matches local.")
+            log_operation(bundle_name, "pull", "no changes")
             return
 
         # Read manifest from remote to classify missing files
@@ -2134,6 +2170,16 @@ def cmd_pull(args):
             print()
             for h in hints:
                 print(h)
+            # Log preview
+            found = []
+            if changed_files:
+                found.append(f"{len(changed_files)} modified")
+            if new_remote_files:
+                found.append(f"{len(new_remote_files)} new")
+            if actually_deleted:
+                found.append(f"{len(actually_deleted)} deleted")
+            if found:
+                log_operation(bundle_name, "pull", f"preview: {', '.join(found)}")
             return
 
         # --- Apply changed files ---
@@ -2325,7 +2371,9 @@ def cmd_pull(args):
         if cannot_apply:
             parts.append(f"{len(cannot_apply)} composite file(s) skipped")
         if parts:
-            print(f"\n{'. '.join(parts)}.")
+            summary = '. '.join(parts)
+            print(f"\n{summary}.")
+            log_operation(bundle_name, "pull", f"apply: {summary}")
 
 
 # ============================================================================
