@@ -39,7 +39,7 @@ LINKS_DIR = REPO_ROOT / "links"
 LINKS_IN_DEPTH_DIR = REPO_ROOT / "links-in-depth"
 UTIL_DIR = REPO_ROOT / "util"
 DESTINATIONS_FILE = REPO_ROOT / "destinations.private"
-MANIFEST_REMOTE_PATH = ".dotfiles-bundle-manifest.json"
+MANIFEST_FILENAME = ".manifest.json"
 BACKUP_REMOTE_DIR = ".dotfiles-bundle-backup"
 MAX_BACKUPS = 5
 
@@ -1428,39 +1428,29 @@ def build_manifest(
     return manifest
 
 
-def write_manifest_to_remote(deployer: Deployer, manifest: dict) -> bool:
-    """Write manifest JSON to the remote host."""
-    target = deployer.destination.target
-    if ":" in target:
-        host = target.rsplit(":", 1)[0]
-    else:
-        host = target
-
-    manifest_json = json.dumps(manifest, indent=2, sort_keys=True)
-
-    cmd = ["ssh"] + deployer._ssh_opts() + [host, f"cat > ~/{MANIFEST_REMOTE_PATH}"]
-
-    result = subprocess.run(cmd, input=manifest_json, capture_output=True, text=True)
-    return result.returncode == 0
+def _manifest_path(bundle_name: str) -> Path:
+    """Return local path for the bundle's deployment manifest."""
+    return BUNDLES_DIR / bundle_name / MANIFEST_FILENAME
 
 
-def read_manifest_from_remote(deployer: Deployer) -> dict | None:
-    """Read manifest JSON from the remote host. Returns None if not found."""
-    target = deployer.destination.target
-    if ":" in target:
-        host = target.rsplit(":", 1)[0]
-    else:
-        host = target
-
-    cmd = ["ssh"] + deployer._ssh_opts() + [host, f"cat ~/{MANIFEST_REMOTE_PATH} 2>/dev/null"]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-
+def write_manifest(bundle_name: str, manifest: dict) -> bool:
+    """Write manifest JSON to the local bundle directory."""
+    path = _manifest_path(bundle_name)
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def read_manifest(bundle_name: str) -> dict | None:
+    """Read manifest JSON from the local bundle directory."""
+    path = _manifest_path(bundle_name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
         return None
 
 
@@ -1726,6 +1716,9 @@ def cmd_deploy(args):
 
         if not changes:
             print(f"No changes to deploy. ({len(unchanged)} files already up to date)")
+            # Still write manifest (config may have changed)
+            manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
+            write_manifest(bundle_name, manifest)
             return
 
         # Show unchanged summary first
@@ -1776,10 +1769,10 @@ def cmd_deploy(args):
             else:
                 print("No changes - already up to date.")
 
-            # Write deployment manifest to remote
+            # Write deployment manifest locally
             manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
-            if write_manifest_to_remote(deployer, manifest):
-                print(f"  Manifest written to ~/{MANIFEST_REMOTE_PATH}")
+            if write_manifest(bundle_name, manifest):
+                print(f"  Manifest written to {_manifest_path(bundle_name).relative_to(REPO_ROOT)}")
             else:
                 print(f"  {Color.YELLOW}Failed to write manifest{Color.RESET}")
 
@@ -1999,7 +1992,7 @@ def cmd_pull(args):
             return
 
         # Read manifest from remote to classify missing files
-        manifest = read_manifest_from_remote(deployer)
+        manifest = read_manifest(bundle_name)
         manifest_files = manifest.get("files", {}) if manifest else {}
         if manifest:
             deployed_at = manifest.get("deployed_at", "unknown")
