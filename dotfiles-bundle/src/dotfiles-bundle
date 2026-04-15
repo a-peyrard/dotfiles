@@ -1048,7 +1048,7 @@ class Deployer:
             opts.extend(["-o", f"ControlPath={self._control_path}"])
         return opts
 
-    def preview(self, package_dir: Path) -> tuple[list[str], list[str]]:
+    def preview(self, package_dir: Path, extra_excludes: list[str] | None = None) -> tuple[list[str], list[str]]:
         """Preview what would be changed using rsync dry-run.
 
         Returns:
@@ -1064,6 +1064,9 @@ class Deployer:
             "--exclude=README.md",
             "--exclude=util/",
         ]
+
+        for ex in (extra_excludes or []):
+            cmd.extend(["--exclude", ex])
 
         if ssh_opts:
             cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
@@ -1100,7 +1103,7 @@ class Deployer:
 
         return changes, unchanged
 
-    def deploy(self, package_dir: Path) -> tuple[bool, list[str]]:
+    def deploy(self, package_dir: Path, extra_excludes: list[str] | None = None) -> tuple[bool, list[str]]:
         """Deploy to destination.
 
         Returns:
@@ -1116,6 +1119,9 @@ class Deployer:
             "--exclude=README.md",
             "--exclude=util/",
         ]
+
+        for ex in (extra_excludes or []):
+            cmd.extend(["--exclude", ex])
 
         if ssh_opts:
             cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
@@ -1340,6 +1346,66 @@ def _check_remote_changes(
                 changed.append(fp)
 
         return changed
+
+
+def classify_changes(
+    package_dir: Path,
+    remote_dir: Path,
+    file_paths: list[str],
+    manifest: dict | None,
+) -> dict[str, str]:
+    """Three-way comparison using manifest as common ancestor.
+
+    For each file, compares local (package), remote, and manifest hashes
+    to determine the direction of change.
+
+    Returns dict of {filepath: classification} where classification is:
+    - "unchanged"    — all three match (or local == remote without manifest)
+    - "local_only"   — local differs from manifest, remote matches manifest
+    - "remote_only"  — remote differs from manifest, local matches manifest
+    - "both"         — both differ from manifest (conflict)
+    - "no_manifest"  — no manifest, but local != remote (unknown direction)
+    """
+    manifest_files = manifest.get("files", {}) if manifest else {}
+    result: dict[str, str] = {}
+
+    for fp in file_paths:
+        local_file = package_dir / fp
+        remote_file = remote_dir / fp
+
+        if not local_file.exists() or not remote_file.exists():
+            continue
+
+        local_hash = hashlib.sha256(local_file.read_bytes()).hexdigest()
+        remote_hash = hashlib.sha256(remote_file.read_bytes()).hexdigest()
+
+        if local_hash == remote_hash:
+            result[fp] = "unchanged"
+            continue
+
+        manifest_entry = manifest_files.get(fp)
+        if not manifest_entry:
+            result[fp] = "no_manifest"
+            continue
+
+        manifest_hash = manifest_entry.get("hash")
+        if not manifest_hash:
+            result[fp] = "no_manifest"
+            continue
+
+        local_matches_manifest = (local_hash == manifest_hash)
+        remote_matches_manifest = (remote_hash == manifest_hash)
+
+        if local_matches_manifest and not remote_matches_manifest:
+            result[fp] = "remote_only"
+        elif not local_matches_manifest and remote_matches_manifest:
+            result[fp] = "local_only"
+        elif not local_matches_manifest and not remote_matches_manifest:
+            result[fp] = "both"
+        else:
+            result[fp] = "unchanged"
+
+    return result
 
 
 # ============================================================================
@@ -1753,30 +1819,68 @@ def cmd_deploy(args):
         do_apply = args.apply or args.yes
 
         # Pre-deploy remote change check (unless --force)
+        remote_only_files = []
         if not args.force:
             provenance = build_provenance_map(bundle_name, files, builder.override_manager)
+            manifest = read_manifest(bundle_name)
             print("\nChecking remote for changes...")
-            remote_changes = _check_remote_changes(deployer, package_dir, provenance)
 
-            if remote_changes is None:
-                print(f"  {Color.YELLOW}Could not check remote (connection failed){Color.RESET}")
-            elif remote_changes:
-                print(f"\n{Color.YELLOW}Warning: {len(remote_changes)} file(s) modified on remote:{Color.RESET}")
-                for f in remote_changes:
-                    info(f)
-                print(f"\nThese will be overwritten by deploy.")
-                print(f"Run '{Color.CYAN}dotfiles-bundle pull {bundle_name}{Color.RESET}' to review/save them.")
-                if do_apply and not args.yes:
-                    response = input("\nContinue with deploy? [y/N]: ").strip().lower()
-                    if response != "y":
-                        print("Aborted.")
-                        return
-            else:
-                print("  No remote changes detected.")
+            # Pull remote files for comparison
+            with tempfile.TemporaryDirectory() as check_tmp:
+                files_list = Path(check_tmp) / "files.txt"
+                check_paths = sorted(provenance.keys())
+                files_list.write_text("\n".join(check_paths) + "\n")
+                check_remote_dir = Path(check_tmp) / "remote"
+                check_remote_dir.mkdir()
+
+                if deployer.pull(check_remote_dir, files_list):
+                    classifications = classify_changes(
+                        package_dir, check_remote_dir, check_paths, manifest,
+                    )
+
+                    remote_only = [f for f, c in classifications.items() if c == "remote_only"]
+                    local_only = [f for f, c in classifications.items() if c == "local_only"]
+                    conflicts = [f for f, c in classifications.items() if c == "both"]
+                    no_manifest = [f for f, c in classifications.items() if c == "no_manifest"]
+
+                    if not remote_only and not conflicts and not no_manifest:
+                        print("  No remote changes detected.")
+                    else:
+                        if remote_only:
+                            print(f"\n  {len(remote_only)} remote-only change(s) — will be preserved (not overwritten):")
+                            for f in remote_only:
+                                info(f"{Color.CYAN}{f}{Color.RESET}")
+                            remote_only_files = remote_only
+
+                        if local_only:
+                            print(f"\n  {len(local_only)} local-only change(s) — will be deployed.")
+
+                        if conflicts:
+                            print(f"\n  {Color.YELLOW}{len(conflicts)} conflict(s) — changed on both sides:{Color.RESET}")
+                            for f in conflicts:
+                                info(f"{Color.YELLOW}{f}{Color.RESET}")
+                            print(f"\n  Run '{Color.CYAN}dotfiles-bundle pull {bundle_name}{Color.RESET}' to resolve.")
+                            if do_apply and not args.yes:
+                                response = input("\nContinue with deploy (conflicts will be overwritten)? [y/N]: ").strip().lower()
+                                if response != "y":
+                                    print("Aborted.")
+                                    return
+
+                        if no_manifest:
+                            print(f"\n  {Color.YELLOW}{len(no_manifest)} file(s) differ (no manifest — unknown direction):{Color.RESET}")
+                            for f in no_manifest:
+                                info(f)
+                            if do_apply and not args.yes:
+                                response = input("\nContinue with deploy? [y/N]: ").strip().lower()
+                                if response != "y":
+                                    print("Aborted.")
+                                    return
+                else:
+                    print(f"  {Color.YELLOW}Could not check remote (connection failed){Color.RESET}")
 
         # Preview
         header("Preview (rsync --dry-run):")
-        changes, unchanged = deployer.preview(package_dir)
+        changes, unchanged = deployer.preview(package_dir, extra_excludes=remote_only_files)
 
         if not changes:
             print(f"No changes to deploy. ({len(unchanged)} files already up to date)")
@@ -1827,7 +1931,7 @@ def cmd_deploy(args):
                 print(f"  {Color.YELLOW}Backup failed (continuing anyway){Color.RESET}")
 
         print("\nDeploying...")
-        success, synced = deployer.deploy(package_dir)
+        success, synced = deployer.deploy(package_dir, extra_excludes=remote_only_files)
         if success:
             if synced:
                 print(f"\n{len(synced)} file(s) synced.")
@@ -2004,30 +2108,40 @@ def cmd_pull(args):
         if not deployer.pull_with_patterns(remote_dir, all_includes, all_excludes):
             die("Failed to pull from remote")
 
-        # Compare known files for changes
-        changed_files = []
+        # Three-way comparison using manifest
+        manifest = read_manifest(bundle_name)
+
+        # Detect deleted files (in provenance but not on remote)
         deleted_files = []
-        line_stats = {}  # fp -> (insertions, deletions)
         for fp in file_paths:
             local_file = local_dir / fp
             remote_file = remote_dir / fp
-            if not remote_file.exists():
-                if local_file.exists():
-                    deleted_files.append(fp)
-                continue
-            if not local_file.exists():
-                continue
-            if local_file.read_bytes() != remote_file.read_bytes():
-                changed_files.append(fp)
-                try:
-                    local_lines = local_file.read_text().splitlines()
-                    remote_lines = remote_file.read_text().splitlines()
-                    diff = list(difflib.unified_diff(local_lines, remote_lines, n=0))
-                    ins = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-                    dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
-                    line_stats[fp] = (ins, dels)
-                except UnicodeDecodeError:
-                    pass
+            if not remote_file.exists() and local_file.exists():
+                deleted_files.append(fp)
+
+        # Classify changed files by direction
+        classifications = classify_changes(package_dir=local_dir, remote_dir=remote_dir, file_paths=file_paths, manifest=manifest)
+
+        remote_only_files = [f for f, c in classifications.items() if c == "remote_only"]
+        local_only_files = [f for f, c in classifications.items() if c == "local_only"]
+        conflict_files = [f for f, c in classifications.items() if c == "both"]
+        no_manifest_files = [f for f, c in classifications.items() if c == "no_manifest"]
+
+        # Compute line stats for files we'll display
+        line_stats = {}
+        for fp in remote_only_files + conflict_files + no_manifest_files:
+            try:
+                local_lines = (local_dir / fp).read_text().splitlines()
+                remote_lines = (remote_dir / fp).read_text().splitlines()
+                diff = list(difflib.unified_diff(local_lines, remote_lines, n=0))
+                ins = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+                dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+                line_stats[fp] = (ins, dels)
+            except UnicodeDecodeError:
+                pass
+
+        # For backwards compat: changed_files = all non-unchanged for display/apply
+        changed_files = remote_only_files + conflict_files + no_manifest_files
 
         # Apply pull_ignore to filter out expected remote-only files
         pull_ignore = config.pull_ignore
@@ -2053,13 +2167,11 @@ def cmd_pull(args):
                 continue
             new_remote_files.append(rel)
 
-        if not changed_files and not new_remote_files and not deleted_files:
+        if not changed_files and not local_only_files and not new_remote_files and not deleted_files:
             print("\nNo changes detected. Remote matches local.")
             log_operation(bundle_name, "pull", "no changes")
             return
 
-        # Read manifest from remote to classify missing files
-        manifest = read_manifest(bundle_name)
         manifest_files = manifest.get("files", {}) if manifest else {}
         if manifest:
             deployed_at = manifest.get("deployed_at", "unknown")
@@ -2074,57 +2186,83 @@ def cmd_pull(args):
             else:
                 not_yet_deployed.append(fp)
 
-        # --- Display changed files ---
+        # --- Determine which files can be auto-applied ---
         can_apply = []
         cannot_apply = []
-        if changed_files:
-            for fp in changed_files:
-                prov = provenance.get(fp)
-                # Check manifest for composite file reconciliation
-                manifest_entry = manifest_files.get(fp, {})
-                manifest_components = manifest_entry.get("components")
-                if prov and not prov.has_overrides:
-                    can_apply.append(fp)
-                elif prov and prov.has_overrides and manifest_components:
-                    # Composite file: check which components changed locally since deploy
-                    local_components_unchanged = True
-                    for mc in manifest_components:
-                        source_path = REPO_ROOT / mc["source"]
-                        if source_path.exists():
-                            current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
-                            if current_hash != mc["hash"]:
-                                local_components_unchanged = False
-                                break
-                        else:
+        # Only remote-only and no-manifest files are candidates for pull
+        for fp in changed_files:
+            prov = provenance.get(fp)
+            manifest_entry = manifest_files.get(fp, {})
+            manifest_components = manifest_entry.get("components")
+            if fp in conflict_files:
+                cannot_apply.append(fp)
+            elif prov and not prov.has_overrides:
+                can_apply.append(fp)
+            elif prov and prov.has_overrides and manifest_components:
+                # Composite file: check which components changed locally since deploy
+                local_components_unchanged = True
+                for mc in manifest_components:
+                    source_path = REPO_ROOT / mc["source"]
+                    if source_path.exists():
+                        current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                        if current_hash != mc["hash"]:
                             local_components_unchanged = False
                             break
-                    if local_components_unchanged:
-                        # No local component changes — safe to treat as simple override
-                        can_apply.append(fp)
                     else:
-                        cannot_apply.append(fp)
+                        local_components_unchanged = False
+                        break
+                if local_components_unchanged:
+                    can_apply.append(fp)
                 else:
                     cannot_apply.append(fp)
+            else:
+                cannot_apply.append(fp)
 
-            print(f"\n{len(changed_files)} modified file(s):")
-            for fp in changed_files:
+        # --- Display remote-only changes (pullable) ---
+        if remote_only_files:
+            print(f"\n{len(remote_only_files)} remote-only change(s):")
+            for fp in remote_only_files:
                 prov = provenance.get(fp)
+                stats = line_stats.get(fp)
+                if stats:
+                    stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.MAGENTA}-{stats[1]}{Color.RESET}"
+                if prov and not prov.has_overrides:
+                    try:
+                        source_rel = prov.source_path.relative_to(REPO_ROOT)
+                    except ValueError:
+                        source_rel = prov.source_path
+                    label = f" -> {Color.DIM}{source_rel}{Color.RESET}"
+                elif fp in can_apply:
+                    label = f" {Color.DIM}(composite, reconcilable){Color.RESET}"
+                else:
+                    label = f" {Color.DIM}(composite, manual only){Color.RESET}"
+                info(f"{Color.YELLOW}M{Color.RESET} {fp}{label}{stat_str}")
+
+        # --- Display local-only changes (informational) ---
+        if local_only_files:
+            print(f"\n{len(local_only_files)} local-only change(s) (deploy to push):")
+            for fp in local_only_files:
+                info(f"{Color.DIM}L{Color.RESET} {fp}")
+
+        # --- Display conflicts ---
+        if conflict_files:
+            print(f"\n{Color.YELLOW}{len(conflict_files)} conflict(s) — changed on both sides:{Color.RESET}")
+            for fp in conflict_files:
                 stats = line_stats.get(fp)
                 stat_str = ""
                 if stats:
                     stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.MAGENTA}-{stats[1]}{Color.RESET}"
-                if fp in can_apply:
-                    if prov and prov.has_overrides:
-                        label = f" {Color.DIM}(composite, reconcilable){Color.RESET}"
-                    else:
-                        try:
-                            source_rel = prov.source_path.relative_to(REPO_ROOT)
-                        except ValueError:
-                            source_rel = prov.source_path
-                        label = f" -> {Color.DIM}{source_rel}{Color.RESET}"
-                else:
-                    label = f" {Color.DIM}(composite, manual only){Color.RESET}"
-                info(f"{Color.YELLOW}M{Color.RESET} {fp}{label}{stat_str}")
+                info(f"{Color.YELLOW}C{Color.RESET} {fp}{stat_str}")
+
+        # --- Display no-manifest files ---
+        if no_manifest_files:
+            print(f"\n{len(no_manifest_files)} changed file(s) (no manifest — unknown direction):")
+            for fp in no_manifest_files:
+                stats = line_stats.get(fp)
+                stat_str = ""
+                if stats:
+                    stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.MAGENTA}-{stats[1]}{Color.RESET}"
+                info(f"{Color.YELLOW}?{Color.RESET} {fp}{stat_str}")
 
         # --- Display new files ---
         if new_remote_files:
