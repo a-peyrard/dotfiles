@@ -42,7 +42,9 @@ exclude = [
     ".env.d/common/20_gui-app.env",
     ".env.d/common/22_latex.env",
     ".env.d/common/24_meta.env",
+    ".env.d/common/24_meta.env.private",
     ".env.d/common/25_meteo.env",
+    ".env.d/common/42_screenshot.env",
     # Not available on dev server
     ".env.d/common/14_docker.env",
     ".env.d/common/33_pyenv.env",
