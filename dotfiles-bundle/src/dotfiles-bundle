@@ -1428,9 +1428,9 @@ def build_manifest(
     return manifest
 
 
-def _manifests_dir(bundle_name: str) -> Path:
+def _manifests_dir(bundle_name: str, action: str = "deploy") -> Path:
     """Return the directory for manifest history."""
-    return BUNDLES_DIR / bundle_name / ".manifests"
+    return BUNDLES_DIR / bundle_name / ".manifests" / action
 
 
 def _manifest_path(bundle_name: str) -> Path:
@@ -1485,6 +1485,37 @@ def log_operation(bundle_name: str, action: str, details: str = ""):
             f.write(line)
     except OSError:
         pass
+
+
+def write_pull_manifest(
+    bundle_name: str,
+    applied_files: dict[str, str],
+    placed_files: dict[str, str],
+) -> bool:
+    """Write a pull manifest recording what was pulled from the remote.
+
+    Args:
+        applied_files: {deployed_path: source_path} for modified files applied
+        placed_files: {deployed_path: placement} for new files placed
+    """
+    from datetime import datetime, timezone
+
+    manifest = {
+        "bundle": bundle_name,
+        "pulled_at": datetime.now(timezone.utc).isoformat(),
+        "applied": applied_files,
+        "placed": placed_files,
+    }
+
+    history_dir = _manifests_dir(bundle_name, "pull")
+    history_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    path = history_dir / f"{timestamp}.json"
+    try:
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return True
+    except OSError:
+        return False
 
 
 # ============================================================================
@@ -2184,6 +2215,8 @@ def cmd_pull(args):
 
         # --- Apply changed files ---
         applied = 0
+        pull_applied = {}   # {deployed_path: source_path}
+        pull_placed = {}    # {deployed_path: placement}
         if changed_files:
             if cannot_apply:
                 print(f"\n{Color.YELLOW}Skipping {len(cannot_apply)} composite file(s) (manual apply only):{Color.RESET}")
@@ -2331,6 +2364,7 @@ def cmd_pull(args):
 
                         if updated_components > 0:
                             applied += 1
+                            pull_applied[fp] = str(prov.source_path)
                         else:
                             info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (could not reconcile composite)")
                     else:
@@ -2339,6 +2373,7 @@ def cmd_pull(args):
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         target_path.write_bytes(remote_file.read_bytes())
                         applied += 1
+                        pull_applied[fp] = str(prov.source_path)
                         try:
                             source_rel = prov.source_path.relative_to(REPO_ROOT)
                         except ValueError:
@@ -2361,6 +2396,7 @@ def cmd_pull(args):
                         continue
                     if _place_new_file(fp, content, placement, bundle_name, mode=mode):
                         placed += 1
+                        pull_placed[fp] = placement
 
         # Summary
         parts = []
@@ -2374,6 +2410,10 @@ def cmd_pull(args):
             summary = '. '.join(parts)
             print(f"\n{summary}.")
             log_operation(bundle_name, "pull", f"apply: {summary}")
+
+            # Write pull manifest
+            if pull_applied or pull_placed:
+                write_pull_manifest(bundle_name, pull_applied, pull_placed)
 
 
 # ============================================================================
