@@ -1,2 +1,3 @@
-# Preconfigured Neovim@Meta
-See https://www.internalfb.com/intern/wiki/Development_Environment/Neovim/Quick_Start/.
+# Neovim Configuration
+
+Lua-based Neovim configuration using lazy.nvim. See `CLAUDE.md` for full architecture documentation.
