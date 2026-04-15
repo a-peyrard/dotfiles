@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""devbridge handler: open a file in nvim via tmux.
+
+Args (JSON stdin): {"file": "/absolute/path", "line": "42"}
+"""
+
+import json
+import logging
+import subprocess
+import sys
+
+WINDOW_START_INDEX = 80
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger(__name__)
+
+
+def find_tmux_session() -> str:
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True,
+        )
+        sessions = result.stdout.strip().splitlines()
+        if sessions:
+            return sessions[0]
+    except Exception:
+        pass
+    subprocess.run(["tmux", "new-session", "-d", "-s", "main"])
+    return "main"
+
+
+def find_free_window_index(session: str) -> int:
+    try:
+        result = subprocess.run(
+            ["tmux", "list-windows", "-t", session, "-F", "#{window_index}"],
+            capture_output=True, text=True,
+        )
+        used = set(result.stdout.strip().splitlines())
+    except Exception:
+        used = set()
+
+    idx = WINDOW_START_INDEX
+    while str(idx) in used:
+        idx += 1
+    return idx
+
+
+def main():
+    args = json.load(sys.stdin)
+    filepath = args.get("file", "")
+    line = args.get("line", "1")
+
+    if not filepath:
+        print("Missing 'file' argument", file=sys.stderr)
+        sys.exit(1)
+
+    session = find_tmux_session()
+    idx = find_free_window_index(session)
+
+    cmd = ["tmux", "new-window", "-n", "nvim-remote", "-t", f"{session}:{idx}"]
+    if line and line != "0":
+        cmd.append(f"nvim +{line} {filepath}")
+    else:
+        cmd.append(f"nvim {filepath}")
+
+    subprocess.run(cmd)
+    print(f"Opened {filepath}:{line} in {session}:{idx}")
+
+
+if __name__ == "__main__":
+    main()

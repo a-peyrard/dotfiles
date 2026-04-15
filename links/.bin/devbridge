@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""devbridge — bidirectional command bridge between Mac and devserver.
+
+A TCP message bus that dispatches JSON commands to handler scripts.
+Two instances run simultaneously (Mac on port 9998, devserver on port 9999),
+connected via ET tunnels.
+
+Usage:
+    devbridge server                              Start the listener
+    devbridge send <cmd> [key=value ...]          Send a command
+    devbridge send notify message="Build done"    Example: notification
+    devbridge send file-receive f=a.png data=@f   @ = read + base64
+    devbridge status                              Check if server is running
+"""
+
+import argparse
+import base64
+import json
+import logging
+import os
+import platform
+import re
+import socket
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_PAYLOAD = 4 * 1024 * 1024  # 4 MB
+HEADER_SIZE = 4
+CMD_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+HANDLERS_DIR = Path.home() / ".config" / "devbridge" / "handlers"
+LOG_FILE = "/tmp/devbridge.log"
+
+IS_MAC = platform.system() == "Darwin"
+DEFAULT_LISTEN_PORT = 9998 if IS_MAC else 9999
+DEFAULT_SEND_PORT = 9999 if IS_MAC else 9998
+
+
+# --- Logging ---
+
+def setup_logging(to_file: bool = False):
+    handlers = [logging.StreamHandler()]
+    if to_file:
+        handlers.append(logging.FileHandler(LOG_FILE))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
+
+
+log = logging.getLogger("devbridge")
+
+
+# --- Protocol ---
+
+def send_msg(sock: socket.socket, data: dict):
+    payload = json.dumps(data).encode("utf-8")
+    if len(payload) > MAX_PAYLOAD:
+        raise ValueError(f"Payload too large: {len(payload)} bytes (max {MAX_PAYLOAD})")
+    sock.sendall(struct.pack(">I", len(payload)) + payload)
+
+
+def recv_msg(sock: socket.socket) -> dict | None:
+    header = _recv_exact(sock, HEADER_SIZE)
+    if not header:
+        return None
+    length = struct.unpack(">I", header)[0]
+    if length > MAX_PAYLOAD:
+        raise ValueError(f"Payload too large: {length} bytes")
+    payload = _recv_exact(sock, length)
+    if not payload:
+        return None
+    return json.loads(payload.decode("utf-8"))
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+# --- Server ---
+
+def cmd_server(args):
+    setup_logging(to_file=True)
+    port = args.port or DEFAULT_LISTEN_PORT
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen(5)
+    log.info(f"devbridge server listening on 127.0.0.1:{port}")
+    log.info(f"Handlers directory: {HANDLERS_DIR}")
+
+    while True:
+        conn, addr = sock.accept()
+        try:
+            msg = recv_msg(conn)
+            if not msg:
+                log.warning("Empty message received")
+                continue
+
+            cmd = msg.get("cmd", "")
+            cmd_args = msg.get("args", {})
+
+            if not CMD_PATTERN.match(cmd):
+                log.warning(f"Invalid command name: {cmd!r}")
+                send_msg(conn, {"ok": False, "error": f"Invalid command: {cmd!r}"})
+                continue
+
+            log.info(f"Received: {cmd} {_summarize_args(cmd_args)}")
+            exit_code, stdout, stderr = dispatch(cmd, cmd_args)
+
+            if exit_code == 0:
+                send_msg(conn, {"ok": True, "output": stdout})
+                log.info(f"OK: {cmd}")
+            else:
+                send_msg(conn, {"ok": False, "error": stderr, "output": stdout})
+                log.error(f"FAILED: {cmd} (exit {exit_code}): {stderr}")
+
+        except Exception as e:
+            log.error(f"Error handling connection: {e}")
+            try:
+                send_msg(conn, {"ok": False, "error": str(e)})
+            except Exception:
+                pass
+        finally:
+            conn.close()
+
+
+def dispatch(cmd: str, args: dict) -> tuple[int, str, str]:
+    handler_path = HANDLERS_DIR / cmd
+    if not handler_path.exists():
+        return 1, "", f"No handler found: {handler_path}"
+    if not os.access(handler_path, os.X_OK):
+        return 1, "", f"Handler not executable: {handler_path}"
+
+    env = os.environ.copy()
+    env["DEVBRIDGE_CMD"] = cmd
+
+    result = subprocess.run(
+        [str(handler_path)],
+        input=json.dumps(args) + "\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _summarize_args(args: dict) -> str:
+    """Summarize args for logging, truncating large values (like base64 data)."""
+    parts = []
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > 100:
+            parts.append(f"{k}=<{len(v)} chars>")
+        else:
+            parts.append(f"{k}={v}")
+    return " ".join(parts) if parts else "(no args)"
+
+
+# --- Client ---
+
+def cmd_send(args):
+    setup_logging()
+    port = args.port or DEFAULT_SEND_PORT
+    host = args.host or "localhost"
+    cmd = args.cmd
+
+    if not CMD_PATTERN.match(cmd):
+        log.error(f"Invalid command name: {cmd!r}")
+        sys.exit(1)
+
+    # Parse key=value pairs into args dict
+    cmd_args = {}
+    for pair in args.args:
+        if "=" not in pair:
+            log.error(f"Invalid argument (expected key=value): {pair!r}")
+            sys.exit(1)
+        key, value = pair.split("=", 1)
+        # @ prefix = read file and base64 encode
+        if value.startswith("@"):
+            filepath = value[1:]
+            try:
+                with open(filepath, "rb") as f:
+                    cmd_args[key] = base64.b64encode(f.read()).decode("ascii")
+            except FileNotFoundError:
+                log.error(f"File not found: {filepath}")
+                sys.exit(1)
+            except Exception as e:
+                log.error(f"Error reading {filepath}: {e}")
+                sys.exit(1)
+        else:
+            cmd_args[key] = value
+
+    msg = {"cmd": cmd, "args": cmd_args}
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect((host, port))
+        send_msg(sock, msg)
+
+        if args.no_wait:
+            sock.close()
+            return
+
+        resp = recv_msg(sock)
+        sock.close()
+
+        if resp is None:
+            log.error("No response from server")
+            sys.exit(1)
+
+        if resp.get("ok"):
+            if resp.get("output"):
+                print(resp["output"])
+        else:
+            error = resp.get("error", "Unknown error")
+            output = resp.get("output", "")
+            if output:
+                print(output, file=sys.stderr)
+            log.error(error)
+            sys.exit(1)
+
+    except ConnectionRefusedError:
+        log.error(f"Connection refused on {host}:{port} — is devbridge server running?")
+        sys.exit(1)
+    except socket.timeout:
+        log.error(f"Connection timed out to {host}:{port}")
+        sys.exit(1)
+
+
+# --- Status ---
+
+def cmd_status(args):
+    port = args.port or DEFAULT_LISTEN_PORT
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(("127.0.0.1", port))
+        sock.close()
+        print(f"devbridge server is running on port {port}")
+    except (ConnectionRefusedError, socket.timeout):
+        print(f"devbridge server is not running on port {port}")
+        sys.exit(1)
+
+
+# --- CLI ---
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bidirectional command bridge between Mac and devserver",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # server
+    sp_server = sub.add_parser("server", help="Start the listener")
+    sp_server.add_argument("-p", "--port", type=int, help=f"Listen port (default: {DEFAULT_LISTEN_PORT})")
+
+    # send
+    sp_send = sub.add_parser("send", help="Send a command")
+    sp_send.add_argument("cmd", help="Command name")
+    sp_send.add_argument("args", nargs="*", help="Arguments as key=value pairs (use @file for base64)")
+    sp_send.add_argument("-p", "--port", type=int, help=f"Target port (default: {DEFAULT_SEND_PORT})")
+    sp_send.add_argument("--host", help="Target host (default: localhost)")
+    sp_send.add_argument("--no-wait", action="store_true", help="Don't wait for response")
+
+    # status
+    sp_status = sub.add_parser("status", help="Check if server is running")
+    sp_status.add_argument("-p", "--port", type=int, help=f"Port to check (default: {DEFAULT_LISTEN_PORT})")
+
+    args = parser.parse_args()
+
+    if args.command == "server":
+        cmd_server(args)
+    elif args.command == "send":
+        cmd_send(args)
+    elif args.command == "status":
+        cmd_status(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
