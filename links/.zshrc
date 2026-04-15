@@ -88,7 +88,7 @@ if [ -d ~/.env.d ]; then
 
   # First, collect from common/
   if [ -d ~/.env.d/common ]; then
-    for env_file in ~/.env.d/common/*.env(N); do
+    for env_file in ~/.env.d/common/*.env(N) ~/.env.d/common/*.env.private(N); do
       local filename=$(basename "$env_file")
       env_files[$filename]="$env_file"
     done
@@ -96,7 +96,7 @@ if [ -d ~/.env.d ]; then
 
   # Then, collect from OS-specific directory (e.g., macos/ or linux/)
   if [ -d ~/.env.d/$OS_TYPE ]; then
-    for env_file in ~/.env.d/$OS_TYPE/*.env(N); do
+    for env_file in ~/.env.d/$OS_TYPE/*.env(N) ~/.env.d/$OS_TYPE/*.env.private(N); do
       local filename=$(basename "$env_file")
       env_files[$filename]="$env_file"  # Override if exists
     done
@@ -104,7 +104,7 @@ if [ -d ~/.env.d ]; then
 
   # Finally, collect from distro-specific directory (e.g., linux_centos/)
   if [ -n "$DISTRO" ] && [ -d ~/.env.d/${OS_TYPE}_${DISTRO} ]; then
-    for env_file in ~/.env.d/${OS_TYPE}_${DISTRO}/*.env(N); do
+    for env_file in ~/.env.d/${OS_TYPE}_${DISTRO}/*.env(N) ~/.env.d/${OS_TYPE}_${DISTRO}/*.env.private(N); do
       local filename=$(basename "$env_file")
       env_files[$filename]="$env_file"  # Override if exists
     done
