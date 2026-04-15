@@ -39,6 +39,9 @@ LINKS_DIR = REPO_ROOT / "links"
 LINKS_IN_DEPTH_DIR = REPO_ROOT / "links-in-depth"
 UTIL_DIR = REPO_ROOT / "util"
 DESTINATIONS_FILE = REPO_ROOT / "destinations.private"
+MANIFEST_REMOTE_PATH = ".dotfiles-bundle-manifest.json"
+BACKUP_REMOTE_DIR = ".dotfiles-bundle-backup"
+MAX_BACKUPS = 5
 
 # ============================================================================
 # TOML Loading
@@ -1122,10 +1125,68 @@ class Deployer:
         elif not source.endswith("/"):
             source += "/"
 
-        cmd = ["rsync", "-azc", f"--files-from={files_from}"]
+        cmd = ["rsync", "-azc", "--ignore-missing-args", f"--files-from={files_from}"]
 
         if ssh_opts:
             cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+
+        cmd.extend([source, f"{dest_dir}/"])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and result.stderr:
+            print(f"rsync error: {result.stderr.strip()}", file=sys.stderr)
+        return result.returncode == 0
+
+    def pull_with_patterns(
+        self, dest_dir: Path, include_patterns: list[str], exclude_patterns: list[str]
+    ) -> bool:
+        """Pull files from remote using include/exclude patterns.
+
+        Unlike pull() with --files-from, this properly recurses into directories
+        to detect new remote files.
+        """
+        ssh_opts = self.destination.ssh_opts.split() if self.destination.ssh_opts else []
+
+        source = self.destination.target
+        if ":" in source:
+            host, path = source.rsplit(":", 1)
+            if path.rstrip("/") == "~":
+                source = host + ":"
+            elif not path.endswith("/"):
+                source += "/"
+        elif not source.endswith("/"):
+            source += "/"
+
+        cmd = ["rsync", "-azc", "--prune-empty-dirs"]
+
+        if ssh_opts:
+            cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+
+        # Specific excludes first (first matching rule wins in rsync)
+        for pattern in exclude_patterns:
+            cmd.extend(["--exclude", pattern])
+
+        # Compute parent directories that must be included for rsync to descend
+        parents: set[str] = set()
+        for pattern in include_patterns:
+            clean = pattern.rstrip("/")
+            parts = Path(clean).parts
+            for i in range(len(parts) - 1):
+                parents.add(str(Path(*parts[: i + 1])) + "/")
+
+        for parent in sorted(parents):
+            cmd.extend(["--include", parent])
+
+        # Include patterns: directories get recursive **, files are literal
+        for pattern in include_patterns:
+            if pattern.endswith("/"):
+                cmd.extend(["--include", pattern])
+                cmd.extend(["--include", pattern + "**"])
+            else:
+                cmd.extend(["--include", pattern])
+
+        # Exclude everything else
+        cmd.extend(["--exclude", "*"])
 
         cmd.extend([source, f"{dest_dir}/"])
 
@@ -1233,6 +1294,226 @@ def _check_remote_changes(
                 changed.append(fp)
 
         return changed
+
+
+# ============================================================================
+# Manifest
+# ============================================================================
+
+
+def build_manifest(
+    bundle_name: str,
+    files: list[ResolvedFile],
+    override_manager: OverrideManager,
+    package_dir: Path,
+) -> dict:
+    """Build a deployment manifest with file hashes and component info.
+
+    The manifest records what was deployed, enabling pull to distinguish
+    'deleted on remote' from 'not yet deployed', and to reconcile composite files.
+    """
+    from datetime import datetime, timezone
+
+    manifest: dict[str, Any] = {
+        "bundle": bundle_name,
+        "deployed_at": datetime.now(timezone.utc).isoformat(),
+        "files": {},
+    }
+
+    for resolved in files:
+        deployed_file = package_dir / resolved.relative_path
+        if not deployed_file.exists():
+            continue
+
+        deployed_hash = hashlib.sha256(deployed_file.read_bytes()).hexdigest()
+        overrides = override_manager.find_overrides(bundle_name, resolved.relative_path)
+
+        entry: dict[str, Any] = {"hash": deployed_hash}
+
+        if overrides:
+            # Store component hashes for composite file reconciliation
+            components = []
+            # Base component
+            if resolved.source_path.exists():
+                base_hash = hashlib.sha256(resolved.source_path.read_bytes()).hexdigest()
+                try:
+                    source_rel = str(resolved.source_path.relative_to(REPO_ROOT))
+                except ValueError:
+                    source_rel = str(resolved.source_path)
+                components.append({
+                    "source": source_rel,
+                    "mode": "base",
+                    "hash": base_hash,
+                })
+            # Override components
+            for ov in overrides:
+                ov_hash = hashlib.sha256(ov.path.read_bytes()).hexdigest()
+                try:
+                    ov_rel = str(ov.path.relative_to(REPO_ROOT))
+                except ValueError:
+                    ov_rel = str(ov.path)
+                components.append({
+                    "source": ov_rel,
+                    "mode": ov.mode,
+                    "hash": ov_hash,
+                })
+            entry["components"] = components
+
+        manifest["files"][resolved.relative_path] = entry
+
+    # Additions
+    additions = override_manager.find_additions(bundle_name)
+    for addition in additions:
+        if addition.is_directory:
+            for src_file in addition.source_path.rglob("*"):
+                if src_file.is_file():
+                    rel = src_file.relative_to(addition.source_path)
+                    deployed_path = str(Path(addition.target_path) / rel)
+                    deployed_file = package_dir / deployed_path
+                    if deployed_file.exists():
+                        deployed_hash = hashlib.sha256(deployed_file.read_bytes()).hexdigest()
+                        manifest["files"][deployed_path] = {"hash": deployed_hash}
+        else:
+            deployed_file = package_dir / addition.target_path
+            if deployed_file.exists():
+                deployed_hash = hashlib.sha256(deployed_file.read_bytes()).hexdigest()
+                manifest["files"][addition.target_path] = {"hash": deployed_hash}
+
+    return manifest
+
+
+def write_manifest_to_remote(deployer: Deployer, manifest: dict) -> bool:
+    """Write manifest JSON to the remote host."""
+    dest = deployer.destination
+    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
+
+    # Extract host from target (user@host:path)
+    target = dest.target
+    if ":" in target:
+        host = target.rsplit(":", 1)[0]
+    else:
+        host = target
+
+    manifest_json = json.dumps(manifest, indent=2, sort_keys=True)
+
+    cmd = ["ssh"]
+    if ssh_opts:
+        cmd.extend(ssh_opts)
+    cmd.extend([host, f"cat > ~/{MANIFEST_REMOTE_PATH}"])
+
+    result = subprocess.run(cmd, input=manifest_json, capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def read_manifest_from_remote(deployer: Deployer) -> dict | None:
+    """Read manifest JSON from the remote host. Returns None if not found."""
+    dest = deployer.destination
+    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
+
+    target = dest.target
+    if ":" in target:
+        host = target.rsplit(":", 1)[0]
+    else:
+        host = target
+
+    cmd = ["ssh"]
+    if ssh_opts:
+        cmd.extend(ssh_opts)
+    cmd.extend([host, f"cat ~/{MANIFEST_REMOTE_PATH} 2>/dev/null"])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+# ============================================================================
+# Remote Backup
+# ============================================================================
+
+
+def backup_remote_files(deployer: Deployer, changed_files: list[str]) -> str | None:
+    """Back up changed files on the remote before overwriting.
+
+    Returns the backup directory name, or None on failure.
+    """
+    if not changed_files:
+        return None
+
+    from datetime import datetime, timezone
+
+    dest = deployer.destination
+    ssh_opts = dest.ssh_opts.split() if dest.ssh_opts else []
+
+    target = dest.target
+    if ":" in target:
+        host = target.rsplit(":", 1)[0]
+    else:
+        host = target
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    backup_dir = f"~/{BACKUP_REMOTE_DIR}/{timestamp}"
+
+    # Build SSH command to create backup dir and copy files
+    copy_cmds = [f"mkdir -p {backup_dir}"]
+    for fp in changed_files:
+        parent = str(Path(fp).parent)
+        if parent and parent != ".":
+            copy_cmds.append(f"mkdir -p {backup_dir}/{parent}")
+        copy_cmds.append(f"cp -p ~/{fp} {backup_dir}/{fp} 2>/dev/null")
+
+    # Rotate old backups: keep only the last MAX_BACKUPS
+    copy_cmds.append(
+        f"cd ~/{BACKUP_REMOTE_DIR} && ls -1d */ 2>/dev/null | head -n -{MAX_BACKUPS} | xargs rm -rf 2>/dev/null"
+    )
+
+    cmd = ["ssh"]
+    if ssh_opts:
+        cmd.extend(ssh_opts)
+    cmd.extend([host, " && ".join(copy_cmds)])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return timestamp
+    return None
+
+
+# ============================================================================
+# Git Safety
+# ============================================================================
+
+
+def _check_repos_clean() -> list[str]:
+    """Check if dotfiles and dotfiles-private repos have uncommitted changes.
+
+    Returns list of error messages (empty if both repos are clean).
+    """
+    errors = []
+    private_dir = Path(os.environ.get(
+        "DOTFILES_PRIVATE", str(REPO_ROOT.parent / "dotfiles-private")
+    ))
+
+    for repo_dir, label in [(REPO_ROOT, "dotfiles"), (private_dir, "dotfiles-private")]:
+        if not (repo_dir / ".git").exists():
+            continue
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "status", "--porcelain"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            dirty_files = [
+                f"    {line}" for line in result.stdout.strip().split("\n")
+            ]
+            errors.append(
+                f"{Color.YELLOW}{label}{Color.RESET} has uncommitted changes:\n"
+                + "\n".join(dirty_files)
+            )
+
+    return errors
 
 
 # ============================================================================
@@ -1448,6 +1729,15 @@ def cmd_deploy(args):
                 print("Aborted.")
                 return
 
+        # Back up changed files on remote before overwriting
+        if changes:
+            print("\nBacking up remote files...")
+            backup_ts = backup_remote_files(deployer, changes)
+            if backup_ts:
+                print(f"  Backed up to ~/{BACKUP_REMOTE_DIR}/{backup_ts}/")
+            else:
+                print(f"  {Color.YELLOW}Backup failed (continuing anyway){Color.RESET}")
+
         print("\nDeploying...")
         success, synced = deployer.deploy(package_dir)
         if success:
@@ -1455,6 +1745,14 @@ def cmd_deploy(args):
                 print(f"\n{len(synced)} file(s) synced.")
             else:
                 print("No changes - already up to date.")
+
+            # Write deployment manifest to remote
+            manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
+            if write_manifest_to_remote(deployer, manifest):
+                print(f"  Manifest written to ~/{MANIFEST_REMOTE_PATH}")
+            else:
+                print(f"  {Color.YELLOW}Failed to write manifest{Color.RESET}")
+
             print("Deployment complete!")
         else:
             die("Deployment failed")
@@ -1554,6 +1852,19 @@ def cmd_pull(args):
             f"  ssh_opts = \"\"  # optional"
         )
 
+    # -y/--yes implies --apply
+    do_apply = args.apply or args.yes
+
+    # Clean repo gate: refuse to apply if repos have uncommitted changes
+    if do_apply:
+        repo_errors = _check_repos_clean()
+        if repo_errors:
+            print(f"\n{Color.YELLOW}Cannot apply: uncommitted changes detected.{Color.RESET}")
+            for err in repo_errors:
+                print(f"\n{err}")
+            print(f"\nCommit or stash your changes, then run pull again.")
+            sys.exit(1)
+
     print(f"\nPulling from: {dest.target}")
     print(f"Bundle: {bundle_name}")
 
@@ -1576,31 +1887,44 @@ def cmd_pull(args):
         # Build provenance map
         provenance = build_provenance_map(bundle_name, files, builder.override_manager)
 
-        # Create files-from list: provenance files + directory patterns for new file detection
-        files_list = Path(temp_dir) / "files.txt"
         file_paths = sorted(provenance.keys())
-        dir_patterns = [p.rstrip("/") for p in config.files_include if p.endswith("/")]
-        all_entries = sorted(set(file_paths) | set(dir_patterns))
-        files_list.write_text("\n".join(all_entries) + "\n")
 
-        # Pull from remote
+        # Pull from remote using include/exclude patterns for full directory scanning
         remote_dir = Path(temp_dir) / "remote"
         remote_dir.mkdir()
 
         deployer = Deployer(dest)
         print("\nPulling remote files...")
-        if not deployer.pull(remote_dir, files_list):
+        all_includes = list(config.files_include) + list(config.runtime_include)
+        all_excludes = list(config.files_exclude) + list(config.runtime_exclude)
+
+        if not deployer.pull_with_patterns(remote_dir, all_includes, all_excludes):
             die("Failed to pull from remote")
 
         # Compare known files for changes
         changed_files = []
+        deleted_files = []
+        line_stats = {}  # fp -> (insertions, deletions)
         for fp in file_paths:
             local_file = local_dir / fp
             remote_file = remote_dir / fp
-            if not remote_file.exists() or not local_file.exists():
+            if not remote_file.exists():
+                if local_file.exists():
+                    deleted_files.append(fp)
+                continue
+            if not local_file.exists():
                 continue
             if local_file.read_bytes() != remote_file.read_bytes():
                 changed_files.append(fp)
+                try:
+                    local_lines = local_file.read_text().splitlines()
+                    remote_lines = remote_file.read_text().splitlines()
+                    diff = list(difflib.unified_diff(local_lines, remote_lines, n=0))
+                    ins = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+                    dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+                    line_stats[fp] = (ins, dels)
+                except UnicodeDecodeError:
+                    pass
 
         # Detect new remote files (in pulled directories but not in provenance)
         new_remote_files = []
@@ -1616,9 +1940,25 @@ def cmd_pull(args):
                 continue
             new_remote_files.append(rel)
 
-        if not changed_files and not new_remote_files:
+        if not changed_files and not new_remote_files and not deleted_files:
             print("\nNo changes detected. Remote matches local.")
             return
+
+        # Read manifest from remote to classify missing files
+        manifest = read_manifest_from_remote(deployer)
+        manifest_files = manifest.get("files", {}) if manifest else {}
+        if manifest:
+            deployed_at = manifest.get("deployed_at", "unknown")
+            print(f"  Last deploy: {Color.DIM}{deployed_at}{Color.RESET}")
+
+        # Classify deleted files using manifest
+        actually_deleted = []  # was deployed, then removed on remote
+        not_yet_deployed = []  # never deployed
+        for fp in deleted_files:
+            if fp in manifest_files:
+                actually_deleted.append(fp)
+            else:
+                not_yet_deployed.append(fp)
 
         # --- Display changed files ---
         can_apply = []
@@ -1626,29 +1966,77 @@ def cmd_pull(args):
         if changed_files:
             for fp in changed_files:
                 prov = provenance.get(fp)
+                # Check manifest for composite file reconciliation
+                manifest_entry = manifest_files.get(fp, {})
+                manifest_components = manifest_entry.get("components")
                 if prov and not prov.has_overrides:
                     can_apply.append(fp)
+                elif prov and prov.has_overrides and manifest_components:
+                    # Composite file: check which components changed locally since deploy
+                    local_components_unchanged = True
+                    for mc in manifest_components:
+                        source_path = REPO_ROOT / mc["source"]
+                        if source_path.exists():
+                            current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                            if current_hash != mc["hash"]:
+                                local_components_unchanged = False
+                                break
+                        else:
+                            local_components_unchanged = False
+                            break
+                    if local_components_unchanged:
+                        # No local component changes — safe to treat as simple override
+                        can_apply.append(fp)
+                    else:
+                        cannot_apply.append(fp)
                 else:
                     cannot_apply.append(fp)
 
-            print(f"\n{len(changed_files)} file(s) differ on remote:")
+            print(f"\n{len(changed_files)} modified file(s):")
             for fp in changed_files:
                 prov = provenance.get(fp)
-                if prov and not prov.has_overrides:
-                    try:
-                        source_rel = prov.source_path.relative_to(REPO_ROOT)
-                    except ValueError:
-                        source_rel = prov.source_path
-                    marker = f" -> {Color.DIM}{source_rel}{Color.RESET}"
+                stats = line_stats.get(fp)
+                stat_str = ""
+                if stats:
+                    stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.MAGENTA}-{stats[1]}{Color.RESET}"
+                if fp in can_apply:
+                    if prov and prov.has_overrides:
+                        label = f" {Color.DIM}(composite, reconcilable){Color.RESET}"
+                    else:
+                        try:
+                            source_rel = prov.source_path.relative_to(REPO_ROOT)
+                        except ValueError:
+                            source_rel = prov.source_path
+                        label = f" -> {Color.DIM}{source_rel}{Color.RESET}"
                 else:
-                    marker = f" {Color.DIM}(composite, manual only){Color.RESET}"
-                info(f"{Color.YELLOW}{fp}{Color.RESET}{marker}")
+                    label = f" {Color.DIM}(composite, manual only){Color.RESET}"
+                info(f"{Color.YELLOW}M{Color.RESET} {fp}{label}{stat_str}")
 
         # --- Display new files ---
         if new_remote_files:
             print(f"\n{len(new_remote_files)} new file(s) on remote:")
             for fp in new_remote_files:
-                info(f"{Color.GREEN}{fp}{Color.RESET} {Color.DIM}(new){Color.RESET}")
+                info(f"{Color.GREEN}A{Color.RESET} {fp}")
+
+        # --- Display deleted/not-deployed files ---
+        if actually_deleted:
+            print(f"\n{len(actually_deleted)} deleted file(s) on remote:")
+            for fp in actually_deleted:
+                prov = provenance.get(fp)
+                if prov:
+                    try:
+                        source_rel = prov.source_path.relative_to(REPO_ROOT)
+                    except ValueError:
+                        source_rel = prov.source_path
+                    target = f" {Color.DIM}({source_rel}){Color.RESET}"
+                else:
+                    target = ""
+                info(f"{Color.MAGENTA}D{Color.RESET} {fp}{target}")
+
+        if not_yet_deployed:
+            print(f"\n{len(not_yet_deployed)} not yet deployed:")
+            for fp in not_yet_deployed:
+                info(f"{Color.DIM}-{Color.RESET} {fp}")
 
         # --- Show diffs if verbose ---
         if args.verbose:
@@ -1691,9 +2079,6 @@ def cmd_pull(args):
                 except UnicodeDecodeError:
                     print(f"  {Color.DIM}(binary file){Color.RESET}")
 
-        # -y/--yes implies --apply
-        do_apply = args.apply or args.yes
-
         if not do_apply:
             hints = []
             if not args.verbose:
@@ -1734,15 +2119,138 @@ def cmd_pull(args):
                 for fp in can_apply:
                     prov = provenance[fp]
                     remote_file = remote_dir / fp
-                    target = prov.source_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(remote_file.read_bytes())
-                    applied += 1
-                    try:
-                        source_rel = prov.source_path.relative_to(REPO_ROOT)
-                    except ValueError:
-                        source_rel = prov.source_path
-                    info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {source_rel}")
+
+                    if prov.has_overrides:
+                        # Composite file reconciliation via manifest
+                        # All local components are unchanged (verified earlier),
+                        # so the remote diff is the full set of changes.
+                        # Apply the diff to the deployed version to get updated content,
+                        # then figure out which component(s) the changes belong to.
+                        manifest_entry = manifest_files.get(fp, {})
+                        manifest_comps = manifest_entry.get("components", [])
+                        remote_content = remote_file.read_bytes()
+                        deployed_content = local_dir / fp  # local_dir has the deployed version
+
+                        # Compute diff between deployed and remote
+                        try:
+                            deployed_lines = deployed_content.read_text().splitlines(keepends=True)
+                            remote_lines = remote_content.decode().splitlines(keepends=True)
+                        except UnicodeDecodeError:
+                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (binary composite)")
+                            continue
+
+                        # For each component, check if the diff falls within its range
+                        # Simple approach: write the full remote content back to each
+                        # component source that we can identify has changes
+                        updated_components = 0
+                        for mc in manifest_comps:
+                            source_path = REPO_ROOT / mc["source"]
+                            if not source_path.exists():
+                                continue
+                            old_component = source_path.read_bytes()
+                            old_hash = hashlib.sha256(old_component).hexdigest()
+                            if old_hash != mc["hash"]:
+                                continue  # local component changed, skip
+
+                            # Rebuild composite WITHOUT this component to isolate its contribution
+                            # For now, use a simpler approach: if there's only one override,
+                            # the base and override are concatenated, so we can split
+                            if mc["mode"] == "base" and len(manifest_comps) == 2:
+                                # base + one override: extract the base portion
+                                override_comp = [c for c in manifest_comps if c["mode"] != "base"][0]
+                                override_source = REPO_ROOT / override_comp["source"]
+                                if override_source.exists():
+                                    override_content = override_source.read_text()
+                                    override_mode = override_comp["mode"]
+                                    if override_mode == "prepend":
+                                        # deployed = override + \n\n + base
+                                        # Extract base from remote
+                                        remote_text = remote_content.decode()
+                                        sep = override_content.rstrip() + "\n\n"
+                                        if remote_text.startswith(sep):
+                                            new_base = remote_text[len(sep):]
+                                            source_path.write_text(new_base)
+                                            updated_components += 1
+                                            try:
+                                                src_rel = source_path.relative_to(REPO_ROOT)
+                                            except ValueError:
+                                                src_rel = source_path
+                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
+                                            continue
+                                    elif override_mode == "append":
+                                        # deployed = base + \n\n + override
+                                        remote_text = remote_content.decode()
+                                        sep = "\n\n" + override_content
+                                        if remote_text.endswith(sep):
+                                            new_base = remote_text[:-len(sep)]
+                                            source_path.write_text(new_base)
+                                            updated_components += 1
+                                            try:
+                                                src_rel = source_path.relative_to(REPO_ROOT)
+                                            except ValueError:
+                                                src_rel = source_path
+                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
+                                            continue
+
+                            elif mc["mode"] in ("prepend", "append") and len(manifest_comps) == 2:
+                                base_comp = [c for c in manifest_comps if c["mode"] == "base"][0]
+                                base_source = REPO_ROOT / base_comp["source"]
+                                if base_source.exists():
+                                    base_content = base_source.read_text()
+                                    remote_text = remote_content.decode()
+                                    if mc["mode"] == "prepend":
+                                        # deployed = override + \n\n + base
+                                        sep = "\n\n" + base_content
+                                        if remote_text.endswith(sep):
+                                            new_override = remote_text[:-len(sep)]
+                                            source_path.write_text(new_override)
+                                            updated_components += 1
+                                            try:
+                                                src_rel = source_path.relative_to(REPO_ROOT)
+                                            except ValueError:
+                                                src_rel = source_path
+                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
+                                            continue
+                                    elif mc["mode"] == "append":
+                                        # deployed = base + \n\n + override
+                                        sep = base_content.rstrip() + "\n\n"
+                                        if remote_text.startswith(sep):
+                                            new_override = remote_text[len(sep):]
+                                            source_path.write_text(new_override)
+                                            updated_components += 1
+                                            try:
+                                                src_rel = source_path.relative_to(REPO_ROOT)
+                                            except ValueError:
+                                                src_rel = source_path
+                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
+                                            continue
+
+                            elif mc["mode"] == "replace":
+                                # Simple replace: write remote content directly
+                                source_path.write_bytes(remote_content)
+                                updated_components += 1
+                                try:
+                                    src_rel = source_path.relative_to(REPO_ROOT)
+                                except ValueError:
+                                    src_rel = source_path
+                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel}")
+                                continue
+
+                        if updated_components > 0:
+                            applied += 1
+                        else:
+                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (could not reconcile composite)")
+                    else:
+                        # Simple file: write remote content to source
+                        target_path = prov.source_path
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        target_path.write_bytes(remote_file.read_bytes())
+                        applied += 1
+                        try:
+                            source_rel = prov.source_path.relative_to(REPO_ROOT)
+                        except ValueError:
+                            source_rel = prov.source_path
+                        info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {source_rel}")
 
         # --- Place new files ---
         placed = 0
