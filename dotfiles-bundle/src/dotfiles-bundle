@@ -242,6 +242,7 @@ class BundleConfig:
     runtime_include: list[str] = field(default_factory=list)
     runtime_exclude: list[str] = field(default_factory=list)
     packages_install: list[str] = field(default_factory=list)
+    pull_ignore: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -354,6 +355,7 @@ class BundleResolver:
         files_section = data.get("files", {})
         runtime_section = data.get("runtime", {})
         packages_section = data.get("packages", {})
+        pull_section = data.get("pull", {})
 
         return BundleConfig(
             name=bundle_section.get("name", name),
@@ -365,6 +367,7 @@ class BundleResolver:
             runtime_include=runtime_section.get("include", []),
             runtime_exclude=runtime_section.get("exclude", []),
             packages_install=packages_section.get("install", []),
+            pull_ignore=pull_section.get("ignore", []),
         )
 
     def _merge_bundles(self, parent: BundleConfig, child: BundleConfig) -> BundleConfig:
@@ -387,6 +390,7 @@ class BundleResolver:
             runtime_include=parent.runtime_include + child.runtime_include,
             runtime_exclude=parent.runtime_exclude + child.runtime_exclude,
             packages_install=merged_packages,
+            pull_ignore=parent.pull_ignore + child.pull_ignore,
         )
 
 
@@ -1929,6 +1933,15 @@ def cmd_pull(args):
         all_includes = list(config.files_include) + list(config.runtime_include)
         all_excludes = list(config.files_exclude) + list(config.runtime_exclude)
 
+        # Also include paths from additions (e.g., .hgrc, .cargo/config.toml)
+        # that aren't covered by the directory-based include patterns
+        for fp in file_paths:
+            prov = provenance.get(fp)
+            if prov and prov.source_type == "addition":
+                if not any(glob_match(p, fp) for p in all_includes):
+                    # Add the specific file path
+                    all_includes.append(fp)
+
         if not deployer.pull_with_patterns(remote_dir, all_includes, all_excludes):
             die("Failed to pull from remote")
 
@@ -1957,6 +1970,14 @@ def cmd_pull(args):
                 except UnicodeDecodeError:
                     pass
 
+        # Apply pull_ignore to filter out expected remote-only files
+        pull_ignore = config.pull_ignore
+        if pull_ignore:
+            deleted_files = [
+                fp for fp in deleted_files
+                if not any(glob_match(p, fp) for p in pull_ignore)
+            ]
+
         # Detect new remote files (in pulled directories but not in provenance)
         new_remote_files = []
         for remote_file in sorted(remote_dir.rglob("*")):
@@ -1968,6 +1989,8 @@ def cmd_pull(args):
             if not any(glob_match(p, rel) for p in config.files_include):
                 continue
             if any(glob_match(ex, rel) for ex in config.files_exclude):
+                continue
+            if any(glob_match(p, rel) for p in pull_ignore):
                 continue
             new_remote_files.append(rel)
 
