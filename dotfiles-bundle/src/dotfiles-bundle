@@ -1820,6 +1820,7 @@ def cmd_deploy(args):
 
         # Pre-deploy remote change check (unless --force)
         remote_only_files = []
+        deploy_conflict_files = []
         if not args.force:
             provenance = build_provenance_map(bundle_name, files, builder.override_manager)
             manifest = read_manifest(bundle_name)
@@ -1856,6 +1857,7 @@ def cmd_deploy(args):
                             print(f"\n  {len(local_only)} local-only change(s) — will be deployed.")
 
                         if conflicts:
+                            deploy_conflict_files = conflicts
                             print(f"\n  {Color.YELLOW}{len(conflicts)} conflict(s) — changed on both sides:{Color.RESET}")
                             for f in conflicts:
                                 info(f"{Color.YELLOW}{f}{Color.RESET}")
@@ -1880,7 +1882,7 @@ def cmd_deploy(args):
 
         # Preview
         header("Preview (rsync --dry-run):")
-        changes, unchanged = deployer.preview(package_dir, extra_excludes=remote_only_files)
+        changes, unchanged = deployer.preview(package_dir, extra_excludes=remote_only_files + deploy_conflict_files)
 
         if not changes:
             print(f"No changes to deploy. ({len(unchanged)} files already up to date)")
@@ -1931,7 +1933,7 @@ def cmd_deploy(args):
                 print(f"  {Color.YELLOW}Backup failed (continuing anyway){Color.RESET}")
 
         print("\nDeploying...")
-        success, synced = deployer.deploy(package_dir, extra_excludes=remote_only_files)
+        success, synced = deployer.deploy(package_dir, extra_excludes=remote_only_files + deploy_conflict_files)
         if success:
             if synced:
                 print(f"\n{len(synced)} file(s) synced.")
