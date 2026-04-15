@@ -11,6 +11,7 @@ return {
       require("nvim-treesitter").setup({
         ensure_installed = {
           "python", "go", "rust", "lua", "bash",
+          "c", "cpp", "thrift",
           "json", "yaml", "toml",
           "markdown", "markdown_inline",
           "vim", "vimdoc",
