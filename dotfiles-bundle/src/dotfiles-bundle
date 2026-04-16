@@ -1632,23 +1632,27 @@ def backup_remote_files(deployer: Deployer, changed_files: list[str]) -> str | N
     backup_dir = f"~/{BACKUP_REMOTE_DIR}/{timestamp}"
 
     # Build SSH command to create backup dir and copy files
+    # Use ; instead of && so a missing file doesn't abort the whole backup
     copy_cmds = [f"mkdir -p {backup_dir}"]
     for fp in changed_files:
         parent = str(Path(fp).parent)
         if parent and parent != ".":
             copy_cmds.append(f"mkdir -p {backup_dir}/{parent}")
-        copy_cmds.append(f"cp -p ~/{fp} {backup_dir}/{fp} 2>/dev/null")
+        copy_cmds.append(f"cp -p ~/{fp} {backup_dir}/{fp}")
 
     # Rotate old backups: keep only the last MAX_BACKUPS
     copy_cmds.append(
-        f"cd ~/{BACKUP_REMOTE_DIR} && ls -1d */ 2>/dev/null | head -n -{MAX_BACKUPS} | xargs rm -rf 2>/dev/null"
+        f"cd ~/{BACKUP_REMOTE_DIR} && ls -1dt */ 2>/dev/null | tail -n +{MAX_BACKUPS + 1} | xargs rm -rf 2>/dev/null; true"
     )
 
-    cmd = ["ssh"] + deployer._ssh_opts() + [host, " && ".join(copy_cmds)]
+    cmd = ["ssh"] + deployer._ssh_opts() + [host, "; ".join(copy_cmds)]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         return timestamp
+
+    if result.stderr:
+        print(f"  {Color.DIM}{result.stderr.strip()}{Color.RESET}", file=sys.stderr)
     return None
 
 
@@ -1952,13 +1956,15 @@ def cmd_deploy(args):
                 return
 
         # Back up changed files on remote before overwriting
-        if changes:
+        if changes and not args.force:
             print("\nBacking up remote files...")
             backup_ts = backup_remote_files(deployer, changes)
             if backup_ts:
                 print(f"  Backed up to ~/{BACKUP_REMOTE_DIR}/{backup_ts}/")
             else:
-                print(f"  {Color.YELLOW}Backup failed (continuing anyway){Color.RESET}")
+                print(f"  {Color.YELLOW}Backup failed. Aborting deploy.{Color.RESET}")
+                print(f"  Use {Color.CYAN}--force{Color.RESET} to skip backup.")
+                return
 
         print("\nDeploying...")
         success, synced = deployer.deploy(package_dir, extra_excludes=remote_only_files + deploy_conflict_files)
