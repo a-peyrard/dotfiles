@@ -45,6 +45,7 @@ def load_dotfiles_bundle():
 dotfiles_bundle = load_dotfiles_bundle()
 
 # Extract classes and functions from the module
+classify_changes = dotfiles_bundle.classify_changes
 glob_match = dotfiles_bundle.glob_match
 deep_merge = dotfiles_bundle.deep_merge
 format_size = dotfiles_bundle.format_size
@@ -1034,3 +1035,174 @@ include = false
 
             # Verify no install script (packages_install=[])
             assert not any("install-packages.sh" in n for n in names)
+
+
+# ============================================================================
+# Three-Way Classification Tests
+# ============================================================================
+
+
+class TestClassifyChanges:
+    """Tests for classify_changes() three-way comparison."""
+
+    def _setup_dirs(self, tmp_path):
+        """Create local and remote dirs for testing."""
+        local_dir = tmp_path / "local"
+        remote_dir = tmp_path / "remote"
+        local_dir.mkdir()
+        remote_dir.mkdir()
+        return local_dir, remote_dir
+
+    def _write(self, base_dir, path, content):
+        """Write a file with content."""
+        f = base_dir / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+
+    def _make_manifest(self, files_dict):
+        """Create a manifest dict from {path: content} mapping."""
+        import hashlib
+        manifest = {"files": {}}
+        for path, content in files_dict.items():
+            h = hashlib.sha256(content.encode()).hexdigest()
+            manifest["files"][path] = {"hash": h}
+        return manifest
+
+    def test_unchanged(self, tmp_path):
+        """Both sides match manifest — unchanged."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "hello")
+        self._write(remote_dir, "file.txt", "hello")
+        manifest = self._make_manifest({"file.txt": "hello"})
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], manifest)
+        assert result["file.txt"] == "unchanged"
+
+    def test_local_only(self, tmp_path):
+        """Local changed, remote matches manifest — local_only."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "modified locally")
+        self._write(remote_dir, "file.txt", "original")
+        manifest = self._make_manifest({"file.txt": "original"})
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], manifest)
+        assert result["file.txt"] == "local_only"
+
+    def test_remote_only(self, tmp_path):
+        """Remote changed, local matches manifest — remote_only."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "original")
+        self._write(remote_dir, "file.txt", "modified on remote")
+        manifest = self._make_manifest({"file.txt": "original"})
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], manifest)
+        assert result["file.txt"] == "remote_only"
+
+    def test_both_changed(self, tmp_path):
+        """Both sides changed — conflict."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "local version")
+        self._write(remote_dir, "file.txt", "remote version")
+        manifest = self._make_manifest({"file.txt": "original"})
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], manifest)
+        assert result["file.txt"] == "both"
+
+    def test_no_manifest(self, tmp_path):
+        """No manifest available — unknown direction."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "local")
+        self._write(remote_dir, "file.txt", "remote")
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], None)
+        assert result["file.txt"] == "no_manifest"
+
+    def test_no_manifest_entry(self, tmp_path):
+        """Manifest exists but file not in it — unknown direction."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "file.txt", "local")
+        self._write(remote_dir, "file.txt", "remote")
+        manifest = self._make_manifest({})  # empty manifest
+
+        result = classify_changes(local_dir, remote_dir, ["file.txt"], manifest)
+        assert result["file.txt"] == "no_manifest"
+
+    def test_new_local_file(self, tmp_path):
+        """File exists locally but not on remote, not in manifest — new local."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "new.txt", "new content")
+        manifest = self._make_manifest({})
+
+        result = classify_changes(local_dir, remote_dir, ["new.txt"], manifest)
+        assert result["new.txt"] == "local_only"
+
+    def test_new_remote_file(self, tmp_path):
+        """File exists on remote but not locally, not in manifest — new remote."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(remote_dir, "new.txt", "new content")
+        manifest = self._make_manifest({})
+
+        result = classify_changes(local_dir, remote_dir, ["new.txt"], manifest)
+        assert result["new.txt"] == "remote_only"
+
+    def test_local_deleted_file(self, tmp_path):
+        """File was deployed (in manifest), removed from local package, still on remote — local deletion."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(remote_dir, "old.txt", "original")
+        manifest = self._make_manifest({"old.txt": "original"})
+
+        result = classify_changes(local_dir, remote_dir, ["old.txt"], manifest)
+        assert result["old.txt"] == "local_only"
+
+    def test_remote_deleted_file(self, tmp_path):
+        """File was deployed (in manifest), still in local package, deleted on remote — remote deletion."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "old.txt", "original")
+        manifest = self._make_manifest({"old.txt": "original"})
+
+        result = classify_changes(local_dir, remote_dir, ["old.txt"], manifest)
+        assert result["old.txt"] == "remote_only"
+
+    def test_mixed_scenario(self, tmp_path):
+        """Multiple files with different classifications."""
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+
+        # unchanged
+        self._write(local_dir, "same.txt", "same")
+        self._write(remote_dir, "same.txt", "same")
+
+        # local_only change
+        self._write(local_dir, "local.txt", "modified")
+        self._write(remote_dir, "local.txt", "original")
+
+        # remote_only change
+        self._write(local_dir, "remote.txt", "original")
+        self._write(remote_dir, "remote.txt", "modified")
+
+        # conflict
+        self._write(local_dir, "conflict.txt", "local ver")
+        self._write(remote_dir, "conflict.txt", "remote ver")
+
+        # new local
+        self._write(local_dir, "new_local.txt", "new")
+
+        # locally deleted (was deployed, now removed from local)
+        self._write(remote_dir, "deleted_local.txt", "old")
+
+        manifest = self._make_manifest({
+            "same.txt": "same",
+            "local.txt": "original",
+            "remote.txt": "original",
+            "conflict.txt": "original",
+            "deleted_local.txt": "old",
+        })
+
+        files = ["same.txt", "local.txt", "remote.txt", "conflict.txt", "new_local.txt", "deleted_local.txt"]
+        result = classify_changes(local_dir, remote_dir, files, manifest)
+
+        assert result["same.txt"] == "unchanged"
+        assert result["local.txt"] == "local_only"
+        assert result["remote.txt"] == "remote_only"
+        assert result["conflict.txt"] == "both"
+        assert result["new_local.txt"] == "local_only"
+        assert result["deleted_local.txt"] == "local_only"
