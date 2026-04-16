@@ -2146,12 +2146,26 @@ def cmd_pull(args):
         conflict_files = [f for f, c in classifications.items() if c == "both"]
         no_manifest_files = [f for f, c in classifications.items() if c == "no_manifest"]
 
+        # Apply pull_ignore early to filter all lists
+        pull_ignore = config.pull_ignore
+        if pull_ignore:
+            _ign = lambda fp: any(glob_match(p, fp) for p in pull_ignore)
+            remote_only_files = [f for f in remote_only_files if not _ign(f)]
+            local_only_files = [f for f in local_only_files if not _ign(f)]
+            conflict_files = [f for f in conflict_files if not _ign(f)]
+            no_manifest_files = [f for f in no_manifest_files if not _ign(f)]
+            deleted_files = [f for f in deleted_files if not _ign(f)]
+
         # Compute line stats for files we'll display
         line_stats = {}
         for fp in remote_only_files + conflict_files + no_manifest_files:
+            local_file = local_dir / fp
+            remote_file = remote_dir / fp
+            if not local_file.exists() or not remote_file.exists():
+                continue
             try:
-                local_lines = (local_dir / fp).read_text().splitlines()
-                remote_lines = (remote_dir / fp).read_text().splitlines()
+                local_lines = local_file.read_text().splitlines()
+                remote_lines = remote_file.read_text().splitlines()
                 diff = list(difflib.unified_diff(local_lines, remote_lines, n=0))
                 ins = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
                 dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
@@ -2161,14 +2175,6 @@ def cmd_pull(args):
 
         # For backwards compat: changed_files = all non-unchanged for display/apply
         changed_files = remote_only_files + conflict_files + no_manifest_files
-
-        # Apply pull_ignore to filter out expected remote-only files
-        pull_ignore = config.pull_ignore
-        if pull_ignore:
-            deleted_files = [
-                fp for fp in deleted_files
-                if not any(glob_match(p, fp) for p in pull_ignore)
-            ]
 
         # Detect new remote files (in pulled directories but not in provenance)
         new_remote_files = []
