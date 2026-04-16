@@ -1372,8 +1372,25 @@ def classify_changes(
     for fp in file_paths:
         local_file = package_dir / fp
         remote_file = remote_dir / fp
+        local_exists = local_file.exists()
+        remote_exists = remote_file.exists()
 
-        if not local_file.exists() or not remote_file.exists():
+        # Files that exist only on one side
+        if local_exists and not remote_exists:
+            manifest_entry = manifest_files.get(fp)
+            if manifest_entry:
+                # Was deployed before, now missing on remote → deleted on remote
+                result[fp] = "remote_only"  # remote changed (by deleting it)
+            else:
+                # Never deployed → new local file
+                result[fp] = "local_only"
+            continue
+
+        if remote_exists and not local_exists:
+            result[fp] = "remote_only"  # new on remote
+            continue
+
+        if not local_exists and not remote_exists:
             continue
 
         local_hash = hashlib.sha256(local_file.read_bytes()).hexdigest()
@@ -1844,8 +1861,8 @@ def cmd_deploy(args):
                     conflicts = [f for f, c in classifications.items() if c == "both"]
                     no_manifest = [f for f, c in classifications.items() if c == "no_manifest"]
 
-                    if not remote_only and not conflicts and not no_manifest:
-                        print("  No remote changes detected.")
+                    if not remote_only and not local_only and not conflicts and not no_manifest:
+                        print("  No changes detected.")
                     else:
                         if remote_only:
                             print(f"\n  {len(remote_only)} remote-only change(s) — will be preserved (not overwritten):")
