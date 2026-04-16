@@ -1,6 +1,7 @@
 .claude
 **/CLAUDE.md
 links/.vim/swaps
+links/.config/nvim/lazy-lock.json
 .netrwhist
 
 # Bundle system private files
