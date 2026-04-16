@@ -1867,6 +1867,11 @@ def cmd_deploy(args):
                     conflicts = [f for f, c in classifications.items() if c == "both"]
                     no_manifest = [f for f, c in classifications.items() if c == "no_manifest"]
 
+                    # Apply pull_ignore to suppress noise
+                    if config.pull_ignore:
+                        _ign = lambda fp: any(glob_match(p, fp) for p in config.pull_ignore)
+                        remote_only = [f for f in remote_only if not _ign(f)]
+
                     if not remote_only and not local_only and not conflicts and not no_manifest:
                         print("  No changes detected.")
                     else:
