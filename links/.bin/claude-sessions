@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+#
+# claude-sessions — TUI for managing concurrent Claude Code sessions in tmux
+#
+# Discovers Claude/Happy processes in tmux panes, shows status, and lets you:
+#   - See all sessions at a glance with status + metrics
+#   - Jump to a session's tmux pane
+#   - Answer questions / send input to a session
+#   - Preview a session's recent output
+#
+# Usage: claude-sessions
+#
+set -euo pipefail
+
+SELF_PANE=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
+LIB_DIR="${HOME}/.local/lib/claude-sessions"
+
+# ── Discovery ──────────────────────────────────────────────────────────────────
+# Find all tmux panes running claude or happy processes
+discover_sessions() {
+    local pane_list
+    pane_list=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_pid}	#{pane_title}" 2>/dev/null) || return 1
+
+    while IFS=$'\t' read -r target pane_pid title; do
+        # Skip our own pane
+        [[ "$target" == "$SELF_PANE" ]] && continue
+
+        # Check if any child process is claude or happy
+        local child_pid child_cmd
+        child_pid=$(pgrep -P "$pane_pid" 2>/dev/null | head -1) || continue
+        [[ -z "$child_pid" ]] && continue
+        child_cmd=$(ps -p "$child_pid" -o comm= 2>/dev/null) || continue
+
+        case "$child_cmd" in
+            claude|happy) ;;
+            *) continue ;;
+        esac
+
+        # Extract session name from pane title (strip status symbol prefix)
+        local name status_symbol
+        if [[ "$title" =~ ^([✳⠂⠐⠈⠁⠄⠠⠃⠅⠆⠇⠉⠊⠋⠌⠍⠎⠏⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟]+)[[:space:]]+(.*) ]]; then
+            status_symbol="${BASH_REMATCH[1]}"
+            name="${BASH_REMATCH[2]}"
+        else
+            name="$title"
+            status_symbol=""
+        fi
+
+        # Detect detailed status from capture-pane
+        local status metrics
+        read -r status metrics < <(detect_status "$target")
+
+        # Emit: target|name|status|metrics|status_symbol|child_cmd
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$target" "$name" "$status" "$metrics" "$status_symbol" "$child_cmd"
+
+    done <<< "$pane_list"
+}
+
+# ── Status Detection ──────────────────────────────────────────────────────────
+detect_status() {
+    local target="$1"
+    local captured
+    captured=$(tmux capture-pane -t "$target" -p -S -30 2>/dev/null) || {
+        echo "unknown "
+        return
+    }
+
+    # Extract metrics from status bar (last 3 lines)
+    local metrics=""
+    local last_lines
+    last_lines=$(echo "$captured" | tail -3)
+
+    local context_pct cost turns model
+    context_pct=$(echo "$last_lines" | grep -oP '🧠\s*\K\d+%' | tail -1) || true
+    cost=$(echo "$last_lines" | grep -oP '💰\s*\$\K[0-9.]+' | tail -1) || true
+    turns=$(echo "$last_lines" | grep -oP '💬\s*\K\d+' | tail -1) || true
+
+    if [[ -n "$context_pct" || -n "$cost" || -n "$turns" ]]; then
+        metrics="🧠${context_pct:-?} 💰\$${cost:-?} 💬${turns:-?}"
+    fi
+
+    # Determine state from terminal content (priority order)
+    local last_10
+    last_10=$(echo "$captured" | tail -10)
+
+    # Working: shows interrupt prompts
+    if echo "$last_10" | grep -qP 'ctrl[+-]c to interrupt'; then
+        echo "working $metrics"
+        return
+    fi
+
+    # Plan review: plan approval UI (check before permission — "approve" appears in both)
+    if echo "$last_10" | grep -qP 'shift\+tab to approve|approve with this feedback|ctrl-g to edit in Vim'; then
+        echo "plan_review $metrics"
+        return
+    fi
+
+    # Permission: tool approval needed
+    if echo "$last_10" | grep -qP 'esc to interrupt|Allow tool|Deny|allow this|Do you trust'; then
+        echo "permission $metrics"
+        return
+    fi
+
+    # Question: numbered options visible
+    if echo "$last_10" | grep -qP '❯\s+\d+\.\s'; then
+        echo "question $metrics"
+        return
+    fi
+
+    # Idle: at the prompt
+    if echo "$last_10" | grep -qP '^\s*❯\s*$|-- INSERT --|-- NORMAL --'; then
+        echo "idle $metrics"
+        return
+    fi
+
+    echo "unknown $metrics"
+}
+
+# ── Formatting ─────────────────────────────────────────────────────────────────
+format_session_line() {
+    local target="$1" name="$2" status="$3" metrics="$4"
+
+    local status_display color_code
+    case "$status" in
+        working)     status_display="⚙ WORKING"    ; color_code="32" ;; # green
+        idle)        status_display="● IDLE"        ; color_code="90" ;; # gray
+        question)    status_display="❓ QUESTION"   ; color_code="31" ;; # red
+        plan_review) status_display="📋 PLAN"       ; color_code="33" ;; # yellow
+        permission)  status_display="🔒 PERMISSION" ; color_code="33" ;; # yellow
+        *)           status_display="? UNKNOWN"     ; color_code="90" ;; # gray
+    esac
+
+    # Pad for alignment
+    printf '\033[%sm%-14s\033[0m %-35s %s' \
+        "$color_code" "$status_display" "$name" "$metrics"
+}
+
+# ── Preview ────────────────────────────────────────────────────────────────────
+preview_session() {
+    local target="$1"
+    local captured
+    captured=$(tmux capture-pane -t "$target" -p -S -25 2>/dev/null) || {
+        echo "Could not capture pane $target"
+        return
+    }
+
+    # Strip empty leading lines and Claude chrome
+    echo "$captured" | sed '/^[[:space:]]*$/d' | \
+        grep -vP '^[─━╭╰│┌└┐┘├┤┬┴┼]+$' | \
+        tail -20
+}
+
+# ── Actions ────────────────────────────────────────────────────────────────────
+jump_to_pane() {
+    local target="$1"
+    local session window_pane
+    session="${target%%:*}"
+    window_pane="${target#*:}"
+
+    tmux select-window -t "${session}:${window_pane%%.*}" 2>/dev/null
+    tmux select-pane -t "$target" 2>/dev/null
+}
+
+send_input() {
+    local target="$1" input="$2"
+    tmux send-keys -t "$target" "$input" Enter 2>/dev/null
+}
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+main() {
+    # Collect sessions
+    local sessions_data
+    sessions_data=$(discover_sessions) || {
+        echo "No Claude sessions found in tmux."
+        exit 0
+    }
+
+    if [[ -z "$sessions_data" ]]; then
+        echo "No Claude sessions found in tmux."
+        exit 0
+    fi
+
+    # Build fzf input: each line is "target\tformatted_display"
+    local fzf_input=""
+    while IFS=$'\t' read -r target name status metrics status_symbol child_cmd; do
+        local display
+        display=$(format_session_line "$target" "$name" "$status" "$metrics")
+        fzf_input+="${target}	${status}	${name}	${display}"$'\n'
+    done <<< "$sessions_data"
+
+    # Remove trailing newline
+    fzf_input="${fzf_input%$'\n'}"
+
+    # Sort: attention-needing sessions first (question > permission > plan_review > working > idle)
+    local sorted_input
+    sorted_input=$(echo "$fzf_input" | sort -t$'\t' -k2,2 | \
+        awk -F'\t' '
+        BEGIN { order["question"]=1; order["permission"]=2; order["plan_review"]=3; order["working"]=4; order["idle"]=5; order["unknown"]=6 }
+        { print (order[$2] ? order[$2] : 9) "\t" $0 }
+    ' | sort -t$'\t' -k1,1n | cut -f2-)
+
+    # Create a temporary script for preview
+    local preview_script
+    preview_script=$(mktemp /tmp/claude-sessions-preview.XXXXX)
+    cat > "$preview_script" << 'PREVIEW_EOF'
+#!/usr/bin/env bash
+target=$(echo "$1" | cut -f1)
+tmux capture-pane -t "$target" -p -S -25 2>/dev/null | \
+    sed '/^[[:space:]]*$/d' | \
+    grep -vP '^[─━╭╰│┌└┐┘├┤┬┴┼]+$' | \
+    tail -20
+PREVIEW_EOF
+    chmod +x "$preview_script"
+
+    # Run fzf
+    local selected action
+    selected=$(echo "$sorted_input" | \
+        fzf --ansi \
+            --delimiter=$'\t' \
+            --with-nth=4 \
+            --preview="bash $preview_script {}" \
+            --preview-window=right:50%:wrap \
+            --header=$'Enter=jump │ ctrl-a=answer │ ctrl-r=refresh │ ctrl-p=preview\n' \
+            --bind="ctrl-r:reload(bash $0 --list)" \
+            --bind="ctrl-a:execute(bash $0 --answer {+})+abort" \
+            --expect="ctrl-a" \
+            --no-sort \
+            --height=80% \
+            --border \
+            --prompt="Sessions> " \
+    ) || {
+        rm -f "$preview_script"
+        exit 0
+    }
+
+    rm -f "$preview_script"
+
+    # Parse fzf output (first line = key pressed, second line = selected item)
+    local key_pressed selected_line target status name
+    key_pressed=$(echo "$selected" | head -1)
+    selected_line=$(echo "$selected" | tail -1)
+    target=$(echo "$selected_line" | cut -f1)
+    status=$(echo "$selected_line" | cut -f2)
+    name=$(echo "$selected_line" | cut -f3)
+
+    if [[ -z "$target" ]]; then
+        exit 0
+    fi
+
+    case "$key_pressed" in
+        ctrl-a)
+            # Answer mode: prompt for input and send it
+            echo ""
+            echo "Session: $name ($target)"
+            echo "Status: $status"
+            echo ""
+
+            # Show the question/context
+            echo "── Current state ──"
+            preview_session "$target"
+            echo "───────────────────"
+            echo ""
+
+            read -rp "Your input: " user_input
+            if [[ -n "$user_input" ]]; then
+                send_input "$target" "$user_input"
+                echo "Sent to $name"
+            fi
+            ;;
+        *)
+            # Default: jump to pane
+            jump_to_pane "$target"
+            ;;
+    esac
+}
+
+# ── Sub-commands (for fzf reload/execute bindings) ────────────────────────────
+case "${1:-}" in
+    --list)
+        # Output formatted list for fzf reload
+        sessions_data=$(discover_sessions) || exit 0
+        while IFS=$'\t' read -r target name status metrics status_symbol child_cmd; do
+            display=$(format_session_line "$target" "$name" "$status" "$metrics")
+            echo -e "${target}\t${status}\t${name}\t${display}"
+        done <<< "$sessions_data" | \
+        awk -F'\t' '
+        BEGIN { order["question"]=1; order["permission"]=2; order["plan_review"]=3; order["working"]=4; order["idle"]=5; order["unknown"]=6 }
+        { print (order[$2] ? order[$2] : 9) "\t" $0 }
+        ' | sort -t$'\t' -k1,1n | cut -f2-
+        ;;
+    --answer)
+        # Answer mode from fzf execute binding
+        shift
+        target=$(echo "$1" | cut -f1)
+        name=$(echo "$1" | cut -f3)
+
+        echo ""
+        echo "Session: $name ($target)"
+        tmux capture-pane -t "$target" -p -S -10 2>/dev/null | \
+            sed '/^[[:space:]]*$/d' | tail -10
+        echo ""
+        read -rp "Your input: " user_input
+        if [[ -n "$user_input" ]]; then
+            tmux send-keys -t "$target" "$user_input" Enter 2>/dev/null
+            echo "Sent."
+        fi
+        ;;
+    --preview)
+        shift
+        target=$(echo "$1" | cut -f1)
+        preview_session "$target"
+        ;;
+    *)
+        main
+        ;;
+esac

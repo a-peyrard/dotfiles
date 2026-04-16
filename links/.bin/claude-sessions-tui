@@ -1,0 +1,1054 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["textual>=1.0"]
+# ///
+"""
+claude-sessions-tui — ae-inspired TUI for managing concurrent Claude Code sessions in tmux.
+
+Discovers Claude/Happy processes in tmux panes, shows their status in a
+chat-app-like interface, and lets you jump to them or send input.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+# Force true color support — tmux/SSH don't always set COLORTERM
+os.environ.setdefault("COLORTERM", "truecolor")
+
+import re
+import subprocess
+import threading
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import IntEnum
+from pathlib import Path
+
+from rich.text import Text
+from textual import events, work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
+from textual.widgets import ListItem, ListView, RichLog, Static
+
+
+# ── Theme ──────────────────────────────────────────────────────────────────────
+
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# ae-inspired phosphor palette
+C_BG = "#101014"
+C_SURFACE = "#181820"
+C_BORDER = "#303040"
+C_TEXT = "#ccccd6"
+C_TEXT_DIM = "#787d87"
+C_HIGHLIGHT = "#1e2841"
+C_PRIMARY = "#00ff88"
+# Status
+C_WORKING = "#d77757"
+C_ATTENTION = "#9ea6e3"
+C_PLAN = "#48968c"
+C_IDLE = "#507850"
+
+
+# ── Data Types ─────────────────────────────────────────────────────────────────
+
+
+class Status(IntEnum):
+    NEEDS_INPUT = 1
+    WORKING = 2
+    IDLE = 3
+
+
+STATUS_META: dict[Status, tuple[str, str]] = {
+    Status.NEEDS_INPUT: ("❓", C_ATTENTION),
+    Status.WORKING:     ("⚙",  C_WORKING),
+    Status.IDLE:        ("●",  C_IDLE),
+}
+
+# Highlight backgrounds
+C_HIGHLIGHT_BG = "#122850"
+C_ATTENTION_BG = "#3d1014"  # very dark red — needs-input cards
+C_UNREAD_BG = "#302010"     # warm shadow — unread idle cards
+C_UNREAD_DOT = "#ff7b3a"    # vivid orange dot for unread sessions
+
+
+@dataclass
+class Session:
+    target: str       # tmux pane target, e.g. "0:1.0"
+    pane_id: str      # tmux pane id, e.g. "%5"
+    name: str
+    status: Status
+    context_pct: str = ""
+    cost: str = ""
+    turns: str = ""
+    preview_lines: list[str] = field(default_factory=list)
+    current_tool: str = ""
+    claude_pid: int = 0
+
+
+# ── Discovery & Status Detection ──────────────────────────────────────────────
+
+
+def _run(cmd: list[str], timeout: float = 5.0) -> str:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def _get_self_pane() -> str:
+    return _run(["tmux", "display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"]).strip()
+
+
+def _detect_status(captured: str) -> Status:
+    """Fallback screen-scraping for sessions without the tmux-statusline plugin."""
+    last_lines = "\n".join(captured.splitlines()[-12:])
+    if re.search(r"shift\+tab to approve|approve with this feedback|ctrl-g to edit in Vim", last_lines):
+        return Status.NEEDS_INPUT
+    if re.search(r"esc to interrupt|Allow tool|Do you trust", last_lines):
+        return Status.NEEDS_INPUT
+    if re.search(r"❯\s+\d+\.\s", last_lines):
+        return Status.NEEDS_INPUT
+    if re.search(r"ctrl[+-]c to interrupt", last_lines):
+        return Status.WORKING
+    return Status.IDLE
+
+
+def _extract_metrics(captured: str) -> tuple[str, str, str]:
+    ctx = cost = turns = ""
+    if m := re.search(r"🧠\s*(\d+%)", captured):
+        ctx = m.group(1)
+    if m := re.search(r"💰\s*\$([0-9.]+)", captured):
+        cost = f"${m.group(1)}"
+    if m := re.search(r"💬\s*(\d+)", captured):
+        turns = m.group(1)
+    return ctx, cost, turns
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+def _is_chrome(line: str) -> bool:
+    """Detect tmux status bar, INSERT mode, bell notification lines."""
+    return bool(re.search(r"🧠|💰|💬|-- INSERT --|🔔", _strip_ansi(line)))
+
+
+def _read_state_files() -> dict[str, dict]:
+    """Read all tmux-statusline state files, indexed by pane_id."""
+    state_dir = Path.home() / ".claude-tmux-statusline" / "state"
+    if not state_dir.exists():
+        return {}
+    states = {}
+    for pid_dir in state_dir.iterdir():
+        if not pid_dir.is_dir():
+            continue
+        for state_file in pid_dir.glob("*.json"):
+            try:
+                data = json.loads(state_file.read_text())
+                pane_id = data.get("pane_id", "")
+                if pane_id:
+                    states[pane_id] = data
+            except (json.JSONDecodeError, OSError):
+                continue
+    return states
+
+
+def _status_from_hook(hook_status: str, current_tool: str) -> Status:
+    if hook_status == "working":
+        return Status.WORKING
+    if hook_status == "waiting" and current_tool in ("permission_prompt", "elicitation_dialog"):
+        return Status.NEEDS_INPUT
+    # "waiting" from Stop/idle_prompt, "idle", "acknowledged" → all idle from user's POV
+    return Status.IDLE
+
+
+def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) -> list[Session]:
+    pane_output = _run(
+        ["tmux", "list-panes", "-a", "-F",
+         "#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_title}\t#{pane_id}"]
+    )
+    if not pane_output.strip():
+        return []
+
+    prev = prev or {}
+
+    # Batch: get all child processes in one ps call
+    pane_infos = []
+    pane_pids = set()
+    for line in pane_output.strip().splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) < 4:
+            continue
+        target, pane_pid_str, title, pane_id = parts
+        if target == self_pane:
+            continue
+        pane_infos.append((target, pane_pid_str, title, pane_id))
+        pane_pids.add(pane_pid_str)
+
+    if not pane_infos:
+        return []
+
+    ps_output = _run(["ps", "-eo", "pid=,ppid=,comm="])
+    # Build parent→child map for claude/happy processes, then walk to deepest descendant
+    claude_children: dict[str, list[tuple[str, str]]] = {}  # ppid → [(pid, cmd)]
+    for ps_line in ps_output.splitlines():
+        ps_line = ps_line.strip()
+        if not ps_line:
+            continue
+        parts = ps_line.split(None, 2)
+        if len(parts) == 3:
+            pid, ppid, cmd = parts
+            if cmd in ("claude", "happy"):
+                claude_children.setdefault(ppid, []).append((pid, cmd))
+
+    # For each pane, find the deepest claude/happy descendant
+    child_info: dict[str, tuple[str, str]] = {}  # pane_pid → (deepest_pid, cmd)
+    for pane_pid in pane_pids:
+        if pane_pid not in claude_children:
+            continue
+        pid, cmd = claude_children[pane_pid][0]
+        # Walk down: claude often spawns a child claude, session file is on the inner one
+        while pid in claude_children:
+            pid, cmd = claude_children[pid][0]
+        child_info[pane_pid] = (pid, cmd)
+
+    # Read hook state files
+    hook_states = _read_state_files()
+
+    sessions = []
+    for target, pane_pid_str, title, pane_id in pane_infos:
+        if pane_pid_str not in child_info:
+            continue
+
+        claude_pid_str, _ = child_info[pane_pid_str]
+
+        m = re.match(r"^[✳⠂⠐⠈⠁⠄⠠⠃⠅⠆⠇⠉⠊⠋⠌⠍⠎⠏⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟]+\s+(.*)", title)
+        name = m.group(1) if m else title
+
+        # Use hook state if available, fall back to screen-scraping
+        hook_state = hook_states.get(pane_id, {})
+        captured = _run(["tmux", "capture-pane", "-t", target, "-p", "-S", "-12"])
+        if hook_state:
+            current_tool = hook_state.get("current_tool", "")
+            status = _status_from_hook(hook_state.get("status", ""), current_tool)
+            if status == Status.IDLE:
+                # Grace period: when transitioning from WORKING → IDLE,
+                # hold WORKING briefly so dialogs have time to render.
+                prev_session = prev.get(target) if prev else None
+                if prev_session and prev_session.status == Status.WORKING:
+                    status_since = hook_state.get("status_since", "")
+                    if status_since:
+                        try:
+                            ts = datetime.fromisoformat(status_since.replace("Z", "+00:00"))
+                            if (datetime.now(timezone.utc) - ts).total_seconds() < 3.0:
+                                status = Status.WORKING
+                        except (ValueError, TypeError):
+                            pass
+                # Screen-scrape safety net: catch NEEDS_INPUT that hooks missed
+                if status == Status.IDLE:
+                    if _detect_status(captured) == Status.NEEDS_INPUT:
+                        status = Status.NEEDS_INPUT
+        else:
+            status = _detect_status(captured)
+            current_tool = ""
+
+        ctx, cost, turns = _extract_metrics(captured)
+
+        sessions.append(Session(
+            target=target, pane_id=pane_id, name=name, status=status,
+            context_pct=ctx, cost=cost, turns=turns,
+            preview_lines=[],
+            current_tool=current_tool,
+            claude_pid=int(claude_pid_str),
+        ))
+
+    # Sort by tmux pane order (session:window.pane)
+    def pane_sort_key(s: Session) -> tuple:
+        parts = s.target.replace(":", ".").split(".")
+        return tuple(int(p) if p.isdigit() else p for p in parts)
+
+    sessions.sort(key=pane_sort_key)
+    return sessions
+
+
+# ── Session Summary ──────────────────────────────────────────────────────────
+
+
+_CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
+
+_UNREAD_FILE = _CACHE_DIR / "unread.json"
+
+
+def _load_unread() -> set[str]:
+    try:
+        return set(json.loads(_UNREAD_FILE.read_text()))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def _save_unread(targets: set[str]) -> None:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _UNREAD_FILE.write_text(json.dumps(list(targets)))
+
+
+# ── Widgets ────────────────────────────────────────────────────────────────────
+
+
+class SessionCard(ListItem):
+    """Multi-line session card. Uses render() for proper background highlight."""
+
+    DEFAULT_CSS = """
+    SessionCard {
+        height: 6;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, session: Session, spinner_frame: int = 0, index: int = 0, unread: bool = False) -> None:
+        super().__init__()
+        self.session = session
+        self._spinner_frame = spinner_frame
+        self._target = session.target
+        self._index = index
+        self._unread = unread
+        self.styles.background = self._card_bg(highlighted=False)
+
+    def _card_bg(self, highlighted: bool) -> str:
+        if highlighted:
+            return C_HIGHLIGHT_BG
+        if self.session.status == Status.NEEDS_INPUT:
+            return C_ATTENTION_BG
+        if self._unread and self.session.status == Status.IDLE:
+            return C_UNREAD_BG
+        return C_BG
+
+    def render(self) -> Text:
+        s = self.session
+        icon, color = STATUS_META[s.status]
+        hl = self.highlighted
+        unread = self._unread and s.status != Status.NEEDS_INPUT
+        bar = "▎" if hl else " "
+        bar_style = "bold #4285f4" if hl else ""
+        text = Text()
+
+        # Line 1: top spacing
+        text.append(bar, style=bar_style)
+        text.append("\n")
+
+        # Line 2: bar + index + icon + [unread dot] + name
+        text.append(bar, style=bar_style)
+        text.append(" ")
+
+        # Show 1-9 shortcut number
+        if self._index < 9:
+            text.append(f"{self._index + 1} ", style=C_TEXT_DIM)
+
+        if s.status == Status.WORKING:
+            spinner_char = SPINNER[self._spinner_frame % len(SPINNER)]
+            text.append(f"{spinner_char} ", style=f"bold {color}")
+        else:
+            text.append(f"{icon} ", style=color)
+
+        if unread:
+            text.append("● ", style=C_UNREAD_DOT)
+
+        name_color = "#ffffff" if hl or unread else C_TEXT
+        text.append(s.name, style=f"bold {name_color}")
+        text.append("\n")
+
+        # Line 3: bar + status description
+        text.append(bar, style=bar_style)
+        text.append("  ")
+
+        if s.current_tool and s.status == Status.WORKING:
+            text.append(s.current_tool, style=C_TEXT_DIM)
+        elif s.status == Status.NEEDS_INPUT:
+            text.append("needs your input", style=C_ATTENTION)
+        elif s.status == Status.WORKING:
+            text.append("working...", style=C_TEXT_DIM)
+        else:
+            text.append("idle", style=C_TEXT_DIM)
+        text.append(f"  {s.target}", style="#505060")
+        text.append("\n")
+
+        # Line 4: bar + metrics
+        text.append(bar, style=bar_style)
+        text.append("  ")
+        metrics = []
+        if s.context_pct:
+            metrics.append(f"🧠 {s.context_pct}")
+        if s.cost:
+            metrics.append(f"💰 {s.cost}")
+        if s.turns:
+            metrics.append(f"💬 {s.turns}")
+        text.append(" · ".join(metrics) if metrics else "", style=C_TEXT_DIM)
+        text.append("\n")
+
+        # Line 5: bottom spacing with bar
+        text.append(bar, style=bar_style)
+
+        return text
+
+    def watch_highlighted(self, value: bool) -> None:
+        """Programmatically set background."""
+        self.styles.background = self._card_bg(value)
+
+    def update_session(self, session: Session, spinner_frame: int, unread: bool | None = None) -> None:
+        self.session = session
+        self._spinner_frame = spinner_frame
+        if unread is not None:
+            self._unread = unread
+        self.styles.background = self._card_bg(self.highlighted)
+        self.refresh()
+
+
+class PreviewPanel(RichLog):
+    """Live mirror of selected session's tmux pane. Auto-scrolls to bottom."""
+
+    DEFAULT_CSS = """
+    PreviewPanel {
+        height: 100%;
+        padding: 0 1;
+        scrollbar-size: 0 0;
+    }
+    """
+
+    _last_text: str = ""
+
+    @staticmethod
+    def _normalize(s: str) -> str:
+        s = re.sub(r"\x1b\[[^a-zA-Z]*[a-zA-Z]", "", s)  # strip ANSI
+        s = re.sub(r".*🔔.*", "", s)  # strip any bell notification line
+        s = re.sub(r"\n\s*\n", "\n", s).strip()  # collapse blank lines
+        return s
+
+    def update_live(self, ansi_content: str) -> None:
+        """Update with raw ANSI content from tmux capture-pane -e."""
+        stripped = self._normalize(ansi_content)
+        if stripped == self._last_text:
+            return
+        self._last_text = stripped
+        self.clear()
+        if not ansi_content.strip():
+            self.write(Text("No output", style=C_TEXT_DIM))
+            return
+        self.write(Text.from_ansi(ansi_content))
+
+
+
+# ── Main App ───────────────────────────────────────────────────────────────────
+
+
+class SessionTracker(App[None]):
+
+    CSS = """
+    Screen { background: #101014; }
+    #title-bar {
+        dock: top; height: 3;
+        background: #181820; color: #ccccd6;
+        padding: 1 2;
+    }
+    #key-bar {
+        dock: bottom; height: 3;
+        background: #181820; color: #787d87;
+        padding: 1 1;
+    }
+    #main { height: 1fr; }
+    #sidebar {
+        width: 20%;
+        border-right: solid #303040;
+        background: #101014;
+    }
+    #session-list {
+        background: #101014;
+        scrollbar-size: 1 1;
+    }
+    #session-list > ListItem {
+        background: #101014;
+    }
+    #session-list > ListItem.-highlight {
+        background: #122850;
+    }
+    #session-list:focus > ListItem.-highlight {
+        background: #122850;
+    }
+    #session-list > ListItem:hover {
+        background: #16161d;
+    }
+    #preview-container {
+        width: 80%;
+        background: #101014;
+    }
+    """
+
+    ENABLE_COMMAND_PALETTE = False
+
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("u", "toggle_unread", "Unread"),
+        Binding("p", "toggle_palette", "Palette", show=False),
+        Binding("tab", "toggle_focus", "Focus", priority=True),
+        Binding("j", "move_down", "Down", show=False),
+        Binding("k", "move_up", "Up", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._self_pane = _get_self_pane()
+        self._sessions: list[Session] = []
+        self._session_map: dict[str, Session] = {}
+        self._spinner_frame = 0
+        self._refresh_count = 0
+        self._preview_focused = False
+        self._palette_mode = False
+        self._stop = threading.Event()
+        # Unread tracking (persisted to disk)
+        self._unread_targets: set[str] = _load_unread()
+        self._prev_statuses: dict[str, Status] = {}  # target → last known status
+        self._manual_unread_target: str | None = None  # prevents dwell from clearing
+        self._read_pending_target: str | None = None
+        self._read_pending_since: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="title-bar")
+        with Horizontal(id="main"):
+            with Vertical(id="sidebar"):
+                yield ListView(id="session-list")
+            yield PreviewPanel(id="preview-container")
+        yield Static("", id="key-bar")
+
+    def on_mount(self) -> None:
+        self._update_title_bar(0)
+        self._update_key_bar()
+        # Force backgrounds programmatically — Textual's DEFAULT_CSS overrides our CSS
+        lv = self.query_one("#session-list", ListView)
+        lv.styles.background = "#101014"
+        self._do_refresh()
+        self.query_one("#session-list", ListView).focus()
+        self._start_refresh_loop()
+        self.set_interval(0.1, self._tick_spinner)
+        self.set_interval(0.3, self._tick_preview)
+        self.set_interval(0.5, self._tick_dwell)
+
+    def _update_title_bar(self, count: int) -> None:
+        text = Text()
+        text.append(" ⚡ ", style=f"bold {C_PRIMARY}")
+        text.append("Claude Sessions", style=f"bold {C_TEXT}")
+        if count:
+            text.append(f"  ({count})", style=C_TEXT_DIM)
+
+        # Status counts
+        counts: dict[Status, int] = {}
+        for s in self._sessions:
+            counts[s.status] = counts.get(s.status, 0) + 1
+        labels = {
+            Status.NEEDS_INPUT: ("needs input", C_ATTENTION),
+            Status.WORKING: ("working", C_WORKING),
+            Status.IDLE: ("idle", C_IDLE),
+        }
+        for st, (label, color) in labels.items():
+            if st in counts:
+                text.append(f"  {counts[st]} {label}", style=color)
+        unread_count = len(self._unread_targets)
+        if unread_count:
+            text.append(f"  {unread_count} unread", style=C_UNREAD_DOT)
+        try:
+            self.query_one("#title-bar", Static).update(text)
+        except NoMatches:
+            pass
+
+    def _update_key_bar(self) -> None:
+        text = Text()
+        if self._preview_focused:
+            keys = [("Tab", "Sidebar"), ("↵", "Jump"), ("q", "Back")]
+            text.append(" 🔵 PREVIEW MODE ", style=f"bold #4285f4")
+            text.append(" — keys forwarded to session ", style=C_TEXT_DIM)
+        else:
+            keys = [("q", "Quit"), ("↵", "Jump"), ("1-9", "Select"), ("u", "Unread"), ("Tab", "Preview"), ("r", "Refresh")]
+        for i, (key, label) in enumerate(keys):
+            if self._preview_focused and i == 0:
+                pass  # already added the mode indicator
+            else:
+                if text.plain:
+                    text.append(" · ", style=C_BORDER)
+            text.append(f" {key} ", style=f"bold {C_PRIMARY}")
+            text.append(label, style=C_TEXT_DIM)
+        try:
+            self.query_one("#key-bar", Static).update(text)
+        except NoMatches:
+            pass
+
+    def _tick_spinner(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
+        # Only update cards for working sessions (lightweight)
+        try:
+            lv = self.query_one("#session-list", ListView)
+            for child in lv.children:
+                if isinstance(child, SessionCard) and child.session.status == Status.WORKING:
+                    child.update_session(child.session, self._spinner_frame)
+        except NoMatches:
+            pass
+
+    @work(thread=True)
+    def _start_refresh_loop(self) -> None:
+        """Background thread: poll every 2s, post results to main thread."""
+        while not self._stop.wait(2.0):
+            try:
+                sessions = discover_sessions(self._self_pane, self._session_map)
+                self.call_from_thread(self._reconcile_list, sessions)
+            except Exception:
+                pass
+
+    def _do_refresh(self) -> None:
+        sessions = discover_sessions(self._self_pane, self._session_map)
+        self._reconcile_list(sessions)
+
+    def _reconcile_list(self, sessions: list[Session]) -> None:
+        if self._palette_mode:
+            return
+        self._refresh_count += 1
+        self._sessions = sessions
+        self._session_map = {s.target: s for s in sessions}
+
+        # Detect WORKING → IDLE transitions → mark unread
+        unread_changed = False
+        for s in sessions:
+            prev_status = self._prev_statuses.get(s.target)
+            if prev_status == Status.WORKING and s.status == Status.IDLE:
+                self._unread_targets.add(s.target)
+                unread_changed = True
+            self._prev_statuses[s.target] = s.status
+
+        # Check tmux pane focus — if user is directly viewing a pane, mark it read
+        self._check_pane_focus(sessions)
+
+        # Clean up stale targets
+        current_targets = {s.target for s in sessions}
+        if self._unread_targets - current_targets:
+            unread_changed = True
+        self._unread_targets &= current_targets
+        self._prev_statuses = {t: st for t, st in self._prev_statuses.items() if t in current_targets}
+        if unread_changed:
+            _save_unread(self._unread_targets)
+
+        lv = self.query_one("#session-list", ListView)
+
+        # Build map of existing cards by target
+        existing: dict[str, SessionCard] = {}
+        for child in lv.children:
+            if isinstance(child, SessionCard):
+                existing[child._target] = child
+
+        new_targets = [s.target for s in sessions]
+        old_targets = list(existing.keys())
+
+        if new_targets == old_targets:
+            # Same sessions in same order — update cards in place (preserves selection)
+            for s in sessions:
+                if s.target in existing:
+                    existing[s.target].update_session(s, self._spinner_frame, unread=s.target in self._unread_targets)
+        else:
+            # Sessions changed — rebuild list
+            selected_target = None
+            if lv.highlighted_child and isinstance(lv.highlighted_child, SessionCard):
+                selected_target = lv.highlighted_child._target
+
+            lv.clear()
+            for i, s in enumerate(sessions):
+                card = SessionCard(s, self._spinner_frame, index=i, unread=s.target in self._unread_targets)
+                card._target = s.target
+                lv.append(card)
+
+            # Restore selection
+            if selected_target and lv.children:
+                for i, child in enumerate(lv.children):
+                    if isinstance(child, SessionCard) and child._target == selected_target:
+                        lv.index = i
+                        break
+            elif lv.children:
+                lv.index = 0
+
+        self._update_title_bar(len(sessions))
+        self._tick_preview()
+
+    def _check_pane_focus(self, sessions: list[Session]) -> None:
+        """Check if the user is directly focused on any session's tmux pane."""
+        # Get client activity to detect idle (>2min = not watching)
+        client_activity = _run(["tmux", "list-clients", "-F", "#{client_activity}"])
+        if not client_activity.strip():
+            return  # no clients attached
+        try:
+            latest = max(int(ts) for ts in client_activity.strip().splitlines() if ts.strip())
+            if datetime.now(timezone.utc).timestamp() - latest > 120:
+                return  # client idle
+        except (ValueError, TypeError):
+            return
+
+        # Check which panes have their window active
+        pane_active = _run(["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}\t#{window_active}"])
+        active_panes: set[str] = set()
+        for line in pane_active.strip().splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[1] == "1":
+                active_panes.add(parts[0])
+
+        changed = False
+        for s in sessions:
+            if s.target in active_panes and s.target in self._unread_targets:
+                self._unread_targets.discard(s.target)
+                changed = True
+        if changed:
+            _save_unread(self._unread_targets)
+
+    def _get_selected_session(self) -> Session | None:
+        lv = self.query_one("#session-list", ListView)
+        child = lv.highlighted_child
+        if isinstance(child, SessionCard):
+            return child.session
+        return None
+
+    def _tick_preview(self) -> None:
+        """Fast poll: live-capture the selected session's pane with ANSI colors."""
+        session = self._get_selected_session()
+        if not session:
+            return
+        try:
+            preview = self.query_one("#preview-container", PreviewPanel)
+        except NoMatches:
+            return
+        # -J joins wrapped lines, -S -200 captures scrollback to fill the preview
+        ansi = _run(["tmux", "capture-pane", "-e", "-p", "-J", "-S", "-200", "-t", session.target])
+        # Trim blank lines from bottom
+        lines = ansi.split("\n")
+        while lines and not _strip_ansi(lines[-1]).strip():
+            lines.pop()
+        # Strip tmux chrome: status bar, INSERT mode, bell notification
+        while lines and _is_chrome(lines[-1]):
+            lines.pop()
+        # Trim any new trailing blanks after stripping
+        while lines and not _strip_ansi(lines[-1]).strip():
+            lines.pop()
+        preview.update_live("\n".join(lines))
+
+    def _tick_dwell(self) -> None:
+        """Check dwell time: mark session as read after ~1.5s of staying on it."""
+        session = self._get_selected_session()
+        if not session:
+            return
+        target = session.target
+        if target != self._read_pending_target:
+            # Selection changed — reset dwell timer, clear manual unread protection
+            if self._manual_unread_target and self._manual_unread_target != target:
+                self._manual_unread_target = None
+            self._read_pending_target = target
+            self._read_pending_since = datetime.now(timezone.utc).timestamp()
+            return
+        if self._manual_unread_target == target:
+            return  # manual unread — don't auto-clear
+        if target not in self._unread_targets:
+            return  # already read
+        elapsed = datetime.now(timezone.utc).timestamp() - self._read_pending_since
+        if elapsed >= 1.5:
+            self._unread_targets.discard(target)
+            _save_unread(self._unread_targets)
+            self._refresh_card(target)
+
+    def _refresh_card(self, target: str) -> None:
+        """Refresh a single card's unread visual state."""
+        try:
+            lv = self.query_one("#session-list", ListView)
+            for child in lv.children:
+                if isinstance(child, SessionCard) and child._target == target:
+                    child._unread = target in self._unread_targets
+                    child.styles.background = child._card_bg(child.highlighted)
+                    child.refresh()
+                    break
+        except NoMatches:
+            pass
+
+    def on_list_view_highlighted(self, _event: ListView.Highlighted) -> None:
+        # Reset dwell timer on selection change
+        session = self._get_selected_session()
+        if session:
+            # Clear manual unread protection when navigating away
+            if self._manual_unread_target and self._manual_unread_target != session.target:
+                self._manual_unread_target = None
+            self._read_pending_target = session.target
+            self._read_pending_since = datetime.now(timezone.utc).timestamp()
+        try:
+            self.query_one("#preview-container", PreviewPanel)._last_text = ""
+        except NoMatches:
+            pass
+        self._tick_preview()
+
+    def action_toggle_focus(self) -> None:
+        self._preview_focused = not self._preview_focused
+        self._update_key_bar()
+        # Visual indicator: change sidebar border color
+        try:
+            sidebar = self.query_one("#sidebar")
+            if self._preview_focused:
+                sidebar.styles.border_right = ("solid", "#4285f4")
+            else:
+                sidebar.styles.border_right = ("solid", "#303040")
+        except NoMatches:
+            pass
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle enter for both modes, and forward keys in preview mode."""
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            if self._preview_focused:
+                # Forward enter to the session pane
+                session = self._get_selected_session()
+                if session:
+                    _run(["tmux", "send-keys", "-t", session.target, "Enter"])
+                    self._tick_preview()
+            else:
+                # Jump to pane
+                self.action_jump()
+            return
+
+        # Number keys 1-9: jump to session by index (like browser tabs)
+        if not self._preview_focused and event.character and event.character in "123456789":
+            idx = int(event.character) - 1
+            lv = self.query_one("#session-list", ListView)
+            if idx < len(lv.children):
+                lv.index = idx
+            event.prevent_default()
+            event.stop()
+            return
+
+        # In preview mode, forward q to the pane instead of quitting
+        if event.key == "q" and self._preview_focused:
+            event.prevent_default()
+            event.stop()
+            session = self._get_selected_session()
+            if session:
+                _run(["tmux", "send-keys", "-t", session.target, "-l", "q"])
+                self._tick_preview()
+            return
+
+        if not self._preview_focused:
+            return
+
+        # Don't forward tab — it exits preview mode
+        if event.key == "tab":
+            return
+
+        session = self._get_selected_session()
+        if not session:
+            return
+        # Map Textual key names to tmux send-keys format
+        key = event.key
+        key_map = {
+            "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+            "escape": "Escape", "backspace": "BSpace", "delete": "DC",
+            "home": "Home", "end": "End", "pageup": "PPage", "pagedown": "NPage",
+            "space": "Space",
+        }
+        if key in key_map:
+            _run(["tmux", "send-keys", "-t", session.target, key_map[key]])
+        elif event.character and len(event.character) == 1:
+            _run(["tmux", "send-keys", "-t", session.target, "-l", event.character])
+        event.prevent_default()
+        event.stop()
+        # Refresh preview immediately so typing feels responsive
+        self._tick_preview()
+
+    def action_move_down(self) -> None:
+        self.query_one("#session-list", ListView).action_cursor_down()
+
+    def action_move_up(self) -> None:
+        self.query_one("#session-list", ListView).action_cursor_up()
+
+    def action_refresh(self) -> None:
+        self._do_refresh()
+
+    def action_toggle_unread(self) -> None:
+        session = self._get_selected_session()
+        if not session:
+            return
+        target = session.target
+        if target in self._unread_targets:
+            self._unread_targets.discard(target)
+            self._manual_unread_target = None
+        else:
+            self._unread_targets.add(target)
+            self._manual_unread_target = target
+        _save_unread(self._unread_targets)
+        self._refresh_card(target)
+
+    # ── Palette preview ─────────────────────────────────────────────────────
+    _PALETTE = [
+        # ── Pastel reds/pinks ──
+        ("#f4a0a0", "pastel rose"),
+        ("#e8a0a0", "dusty pink"),
+        ("#d4908c", "pastel salmon"),
+        ("#c88080", "muted rose"),
+        ("#b87878", "mauve pink"),
+        # ── Pastel oranges/warm ──
+        ("#f4a460", "sandy brown"),
+        ("#e8c890", "champagne"),
+        ("#d0a060", "dusty gold"),
+        ("#c09050", "warm caramel"),
+        ("#b08050", "toffee"),
+        # ── Pastel yellows ──
+        ("#e8d8a0", "pastel butter"),
+        ("#d8c890", "oat"),
+        ("#c8b880", "pastel khaki"),
+        ("#b8a870", "sage gold"),
+        ("#a89868", "dusty wheat"),
+        # ── Pastel greens ──
+        ("#a0d8a0", "pastel mint"),
+        ("#90c890", "soft sage"),
+        ("#80b880", "muted fern"),
+        ("#78a878", "dusty green"),
+        ("#689868", "moss"),
+        # ── Pastel blues ──
+        ("#a0c0e0", "pastel sky"),
+        ("#90b0d0", "powder blue"),
+        ("#80a0c0", "soft steel"),
+        ("#7090b0", "dusty blue"),
+        ("#6080a0", "muted denim"),
+        # ── Pastel purples ──
+        ("#b8a0d0", "pastel lilac"),
+        ("#a890c0", "soft lavender"),
+        ("#9880b0", "dusty violet"),
+        ("#8878a0", "muted plum"),
+        ("#787090", "twilight"),
+        # ── Reds ──
+        ("#ff4444", "bright red"),
+        ("#e63946", "imperial red"),
+        ("#dc3545", "bootstrap red"),
+        ("#cc2936", "crimson"),
+        ("#a4161a", "deep red"),
+        ("#8b0000", "dark red"),
+        ("#ff6b6b", "light coral"),
+        ("#d45d5d", "muted coral"),
+        ("#c75643", "terra cotta"),
+        ("#e07a5f", "burnt sienna"),
+        # ── Oranges ──
+        ("#ff8c00", "dark orange"),
+        ("#ff7b3a", "vivid orange"),
+        ("#e8752a", "burnt orange"),
+        ("#d77757", "current working"),
+        ("#c46530", "rust"),
+        ("#b85c2a", "deep rust"),
+        ("#e09050", "sandy orange"),
+        ("#cc8844", "amber"),
+        ("#b07840", "bronze"),
+        ("#9a6830", "dark bronze"),
+        # ── Yellows ──
+        ("#ffd700", "gold"),
+        ("#ffcc00", "amber yellow"),
+        ("#e6b800", "deep gold"),
+        ("#ccaa00", "dark gold"),
+        ("#b89b00", "antique gold"),
+        ("#ddb040", "honey"),
+        ("#c4a035", "old gold"),
+        ("#aa8820", "dark honey"),
+        ("#e0c060", "wheat"),
+        ("#c0a050", "khaki"),
+        # ── Blues ──
+        ("#4285f4", "google blue"),
+        ("#5b8ab5", "steel blue"),
+        ("#6ea4d4", "sky blue"),
+        ("#3d7cbf", "ocean blue"),
+        ("#2e6da4", "deep sky"),
+        ("#1e5088", "navy blue"),
+        ("#7aa4cc", "powder blue"),
+        ("#5c8aaa", "slate blue"),
+        ("#4a7a9a", "cadet blue"),
+        ("#3a6a8a", "teal blue"),
+        # ── Dark bg-suitable (reds) ──
+        ("#3d1014", "very dark red"),
+        ("#4a1520", "dark wine"),
+        ("#501a1a", "dark maroon"),
+        ("#4a1a30", "dark berry"),
+        ("#201015", "faint ember"),
+        ("#2a1220", "deep ember"),
+        # ── Dark bg-suitable (oranges/yellows) ──
+        ("#201810", "whisper amber"),
+        ("#241a10", "faint bronze"),
+        ("#281c12", "dim amber"),
+        ("#2c1e14", "soft rust bg"),
+        ("#302010", "warm shadow"),
+        ("#1e1a10", "ghost amber"),
+        ("#201c14", "faint khaki"),
+        ("#241e16", "muted sand"),
+        # ── Dark bg-suitable (blues) ──
+        ("#101820", "whisper blue"),
+        ("#101a24", "faint navy"),
+        ("#121c28", "dim steel"),
+        ("#141e2c", "soft dusk"),
+        ("#102030", "deep ocean bg"),
+        ("#122850", "current highlight"),
+    ]
+
+    def action_toggle_palette(self) -> None:
+        self._palette_mode = not self._palette_mode
+        lv = self.query_one("#session-list", ListView)
+        lv.clear()
+        if self._palette_mode:
+            for hex_color, label in self._PALETTE:
+                item = ListItem(Static(""))
+                lv.append(item)
+                # Render a swatch: colored block + label
+                txt = Text()
+                txt.append("  ████  ", style=f"bold {hex_color}")
+                txt.append(f" {hex_color} ", style=f"bold {C_TEXT}")
+                txt.append(label, style=C_TEXT_DIM)
+                item.query_one(Static).update(txt)
+                item.styles.height = 2
+                item.styles.background = C_BG
+            # Also show them as highlight backgrounds
+            lv.append(ListItem(Static(Text("\n── As card backgrounds ──", style=C_TEXT_DIM))))
+            for hex_color, label in self._PALETTE[-20:]:
+                item = ListItem(Static(""))
+                lv.append(item)
+                txt = Text()
+                txt.append(f"  ❓ needs your input  ", style="#ffffff")
+                txt.append(f"  {hex_color} {label}", style=C_TEXT_DIM)
+                item.query_one(Static).update(txt)
+                item.styles.height = 2
+                item.styles.background = hex_color
+            if lv.children:
+                lv.index = 0
+        else:
+            self._do_refresh()
+
+    def action_quit(self) -> None:
+        self._stop.set()
+        self.exit()
+
+    def action_jump(self) -> None:
+        session = self._get_selected_session()
+        if not session:
+            return
+        t = session.target
+        s, wp = t.split(":", 1)
+        w = wp.split(".")[0]
+        _run(["tmux", "select-window", "-t", f"{s}:{w}"])
+        _run(["tmux", "select-pane", "-t", t])
+
+
+
+# ── Entry Point ────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    if not os.environ.get("TMUX"):
+        print("Error: must be run inside tmux")
+        raise SystemExit(1)
+    SessionTracker().run()
