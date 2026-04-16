@@ -2,6 +2,12 @@
 # Modern setup using Starship prompt and modular env.d configuration
 
 # =============================================================================
+# Profiling (opt-in: ZSH_PROFILE=1 or ZSH_PROFILE_ENVD=1)
+# =============================================================================
+[[ -n "$ZSH_PROFILE" ]] && zmodload zsh/zprof
+zmodload zsh/datetime  # provides $EPOCHREALTIME (no fork)
+
+# =============================================================================
 # OS Detection (must be first)
 # =============================================================================
 
@@ -59,7 +65,12 @@ if [ "$OS_TYPE" = "macos" ]; then
   elif [ -d "/usr/local/Homebrew" ]; then
     HOMEBREW_PREFIX="/usr/local"
   fi
-  eval "$($HOMEBREW_PREFIX/bin/brew shellenv)"
+  export HOMEBREW_PREFIX
+  export HOMEBREW_CELLAR="$HOMEBREW_PREFIX/Cellar"
+  export HOMEBREW_REPOSITORY="$HOMEBREW_PREFIX"
+  export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+  [[ -z "${MANPATH-}" ]] || export MANPATH=":${MANPATH#:}"
+  export INFOPATH="$HOMEBREW_PREFIX/share/info:${INFOPATH:-}"
 fi
 
 # Language environment
@@ -111,9 +122,27 @@ if [ -d ~/.env.d ]; then
   fi
 
   # Source files in sorted order
-  for filename in ${(ko)env_files}; do
-    source "${env_files[$filename]}"
-  done
+  if [[ -n "$ZSH_PROFILE_ENVD" ]]; then
+    typeset -A _envd_times
+    local _t0_total=$EPOCHREALTIME
+    for filename in ${(ko)env_files}; do
+      local _t0=$EPOCHREALTIME
+      source "${env_files[$filename]}"
+      _envd_times[$filename]=$(( EPOCHREALTIME - _t0 ))
+    done
+    local _total=$(( EPOCHREALTIME - _t0_total ))
+    # Print sorted by time (descending)
+    echo "\n--- .env.d load times (${_total}s total) ---"
+    for filename in ${(ko)env_files}; do
+      printf "%7.3fs  %s\n" ${_envd_times[$filename]} "$filename"
+    done | sort -rn
+    echo "---"
+    unset _envd_times _t0_total _total
+  else
+    for filename in ${(ko)env_files}; do
+      source "${env_files[$filename]}"
+    done
+  fi
 fi
 
 # =============================================================================
@@ -140,5 +169,12 @@ fi
 # Reload the shell
 alias reload="exec ${SHELL} -l"
 
-# Start ssh-agent
-eval "$(ssh-agent)" &>/dev/null
+# Reuse existing ssh-agent; only start a new one if none available
+if ! ssh-add -l &>/dev/null 2>&1; then
+    eval "$(ssh-agent)" &>/dev/null
+fi
+
+# =============================================================================
+# Profiling output
+# =============================================================================
+[[ -n "$ZSH_PROFILE" ]] && zprof
