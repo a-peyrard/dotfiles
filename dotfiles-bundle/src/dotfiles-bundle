@@ -1379,15 +1379,21 @@ def classify_changes(
         if local_exists and not remote_exists:
             manifest_entry = manifest_files.get(fp)
             if manifest_entry:
-                # Was deployed before, now missing on remote → deleted on remote
-                result[fp] = "remote_only"  # remote changed (by deleting it)
+                # Was deployed, now missing on remote → remote deleted it
+                result[fp] = "remote_only"
             else:
                 # Never deployed → new local file
                 result[fp] = "local_only"
             continue
 
         if remote_exists and not local_exists:
-            result[fp] = "remote_only"  # new on remote
+            manifest_entry = manifest_files.get(fp)
+            if manifest_entry:
+                # Was deployed, now removed from local package → local deleted it
+                result[fp] = "local_only"
+            else:
+                # Never in manifest → new on remote
+                result[fp] = "remote_only"
             continue
 
         if not local_exists and not remote_exists:
@@ -2129,6 +2135,10 @@ def cmd_pull(args):
 
         # Three-way comparison using manifest
         manifest = read_manifest(bundle_name)
+        manifest_files_set = set(manifest.get("files", {}).keys()) if manifest else set()
+
+        # Include manifest paths so we detect files removed from local package
+        all_paths = sorted(set(file_paths) | manifest_files_set)
 
         # Detect deleted files (in provenance but not on remote)
         deleted_files = []
@@ -2139,7 +2149,7 @@ def cmd_pull(args):
                 deleted_files.append(fp)
 
         # Classify changed files by direction
-        classifications = classify_changes(package_dir=local_dir, remote_dir=remote_dir, file_paths=file_paths, manifest=manifest)
+        classifications = classify_changes(package_dir=local_dir, remote_dir=remote_dir, file_paths=all_paths, manifest=manifest)
 
         remote_only_files = [f for f, c in classifications.items() if c == "remote_only"]
         local_only_files = [f for f, c in classifications.items() if c == "local_only"]
@@ -2176,13 +2186,13 @@ def cmd_pull(args):
         # For backwards compat: changed_files = all non-unchanged for display/apply
         changed_files = remote_only_files + conflict_files + no_manifest_files
 
-        # Detect new remote files (in pulled directories but not in provenance)
+        # Detect new remote files (in pulled directories but not in provenance or manifest)
         new_remote_files = []
         for remote_file in sorted(remote_dir.rglob("*")):
             if not remote_file.is_file():
                 continue
             rel = str(remote_file.relative_to(remote_dir))
-            if rel in provenance:
+            if rel in provenance or rel in classifications:
                 continue
             if not any(glob_match(p, rel) for p in config.files_include):
                 continue
