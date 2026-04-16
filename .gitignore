@@ -1,5 +1,7 @@
 .claude
+!links-in-depth/.claude/
 **/CLAUDE.md
+!links-in-depth/.claude/CLAUDE.md
 links/.vim/swaps
 links/.config/nvim/lazy-lock.json
 .netrwhist

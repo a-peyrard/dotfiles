@@ -1,0 +1,632 @@
+#!/bin/bash
+# nvc — Neovim Claude companion
+#
+# Usage:
+#   nvc <file>:<line>                           Open file at line
+#   nvc --highlight-function <file>:<line>      Highlight function block
+#   nvc --highlight <file>:<line>               Highlight any block (for, if, import...)
+#   nvc --highlight-lines <file>:<s>-<e>[,...]  Highlight line ranges
+#   nvc --diff <file>                           Show proposed changes (stdin) as diff
+#   nvc --clear                                 Clear all highlights
+#   nvc --close-diff                            Close diff view
+#   nvc review [D12345|hash|.]                   Review a diff/commit/rev in diffview
+#   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
+#   nvc expr '<vimscript-expr>'                 Evaluate expression, return result
+#   nvc errors                                  Get recent errors (noice-aware)
+#   nvc messages                                Get raw :messages output
+#   nvc debug set-breakpoints <file:line> ...   Set DAP breakpoints at locations
+#   nvc debug attach                            Start DAP from /tmp/fdb-dap.json
+#   nvc debug clear-breakpoints                 Clear all breakpoints
+#
+# Multiple highlight flags can be chained:
+#   nvc --highlight-function f.py:43 --highlight-lines f.py:99-114,160-171
+#
+# All commands auto-spawn nvim in a tmux pane if none is running.
+
+set -euo pipefail
+
+# Scope socket per tmux window — use TMUX_PANE to resolve the correct window
+# even when this pane is not focused (tmux display-message without -t returns
+# the focused window, which may be a different one).
+WINDOW_ID=$(tmux display-message -t "${TMUX_PANE:-}" -p '#{window_id}' 2>/dev/null || echo "default")
+SOCK="/tmp/nvim-claude-${USER}-${WINDOW_ID}.sock"
+
+# ============================================================================
+# Low-level helpers
+# ============================================================================
+
+find_nvim_pane() {
+    tmux list-panes -t "$WINDOW_ID" -F '#{pane_id} #{pane_current_command}' 2>/dev/null \
+        | grep -i nvim \
+        | head -1 \
+        | awk '{print $1}'
+}
+
+socket_alive() {
+    [ -S "$SOCK" ] && nvim --server "$SOCK" --remote-expr "1" >/dev/null 2>&1
+}
+
+wait_for_socket() {
+    local attempts=0
+    while [ $attempts -lt 20 ]; do
+        if socket_alive; then return 0; fi
+        sleep 0.2
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+ensure_nvim_running() {
+    # Already connected? Done.
+    if socket_alive; then return 0; fi
+
+    # Stale socket file — clean up
+    [ -e "$SOCK" ] && rm -f "$SOCK"
+
+    local nvim_pane
+    nvim_pane=$(find_nvim_pane || true)
+
+    if [ -n "$nvim_pane" ]; then
+        # Nvim pane exists but socket is dead — ask it to start listening
+        tmux send-keys -t "$nvim_pane" Escape ":lua vim.fn.serverstart('$SOCK')" Enter
+        if wait_for_socket; then
+            echo "Reconnected to existing nvim pane" >&2
+            return 0
+        fi
+        # serverstart failed — pane is probably stuck, kill and respawn
+        tmux kill-pane -t "$nvim_pane" 2>/dev/null || true
+    fi
+
+    # Spawn fresh nvim
+    tmux split-window -t "${TMUX_PANE}" -h -l 50% "nvim --listen $SOCK"
+    echo "Spawned nvim in new pane" >&2
+    if ! wait_for_socket; then
+        echo "Error: timed out waiting for nvim socket" >&2
+        exit 1
+    fi
+}
+
+# ============================================================================
+# Subcommands: cmd, expr, errors, messages, review, debug
+# ============================================================================
+
+case "${1:-}" in
+    debug)
+        # Debug subcommands: set-breakpoints, attach, clear-breakpoints
+        shift
+        subcmd="${1:-}"
+        shift || true
+
+        case "$subcmd" in
+            set-breakpoints)
+                # Set breakpoints at file:line locations (additive, preserves existing)
+                # Usage: nvc debug set-breakpoints /path/file.py:42 /path/file.py:87
+                if [ $# -eq 0 ]; then
+                    echo "Usage: nvc debug set-breakpoints <file:line> [<file:line> ...]" >&2
+                    exit 1
+                fi
+
+                ensure_nvim_running
+
+                # Build Lua snippet to set breakpoints
+                LUA_LINES="local bps = require('dap.breakpoints')"
+                FIRST_FILE=""
+                FIRST_LINE=""
+                BP_IDX=0
+                for arg in "$@"; do
+                    FILE="${arg%:*}"
+                    LINE="${arg##*:}"
+                    # Resolve to absolute path
+                    [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+                    if [ ! -f "$FILE" ]; then
+                        echo "Warning: file not found: $FILE" >&2
+                        continue
+                    fi
+                    LUA_LINES="${LUA_LINES}
+local b${BP_IDX} = vim.fn.bufnr('${FILE}', true)
+vim.fn.bufload(b${BP_IDX})
+bps.set({}, b${BP_IDX}, ${LINE})"
+                    BP_IDX=$((BP_IDX + 1))
+                    if [ -z "$FIRST_FILE" ]; then
+                        FIRST_FILE="$FILE"
+                        FIRST_LINE="$LINE"
+                    fi
+                done
+
+                # Navigate to first breakpoint
+                if [ -n "$FIRST_FILE" ]; then
+                    LUA_LINES="${LUA_LINES}
+vim.cmd('edit ${FIRST_FILE}')
+vim.api.nvim_win_set_cursor(0, {${FIRST_LINE}, 0})
+vim.cmd('normal! zz')"
+                fi
+
+                LUA_LINES="${LUA_LINES}
+vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
+
+                echo "$LUA_LINES" > /tmp/nvim-claude-debug.lua
+                nvim --server "$SOCK" --remote-send "<Esc>:luafile /tmp/nvim-claude-debug.lua<CR>"
+                echo "Set $# breakpoint(s)" >&2
+                ;;
+
+            attach)
+                # Trigger DAP attach from /tmp/fdb-dap.json
+                ensure_nvim_running
+                nvim --server "$SOCK" --remote-send "<Esc>:lua vim.schedule(function() if _G.FdbDap and _G.FdbDap.debug_from_file then _G.FdbDap.debug_from_file() else vim.notify('FdbDap not loaded', vim.log.levels.ERROR) end end)<CR>"
+                echo "DAP attach triggered" >&2
+                ;;
+
+            clear-breakpoints)
+                # Clear all breakpoints
+                ensure_nvim_running
+                nvim --server "$SOCK" --remote-send "<Esc>:lua require('dap.breakpoints').clear(); vim.notify('All breakpoints cleared')<CR>"
+                echo "Cleared all breakpoints" >&2
+                ;;
+
+            *)
+                echo "Usage: nvc debug <set-breakpoints|attach|clear-breakpoints>" >&2
+                echo "  set-breakpoints <file:line> ...  Set breakpoints at locations" >&2
+                echo "  attach                           Start DAP from /tmp/fdb-dap.json" >&2
+                echo "  clear-breakpoints                Clear all breakpoints" >&2
+                exit 1
+                ;;
+        esac
+        exit 0
+        ;;
+    quit|close)
+        # Close the nvim instance in this window
+        # <C-\><C-n> escapes from any mode (terminal, DAP REPL, insert, etc.)
+        # dap.terminate() kills external debug processes before quit
+        # qa! closes all windows, tabs, buffers, terminal jobs unconditionally
+        if socket_alive; then
+            nvim --server "$SOCK" --remote-send '<C-\><C-n>:lua pcall(function() require("dap").terminate() end); vim.cmd("qa!")<CR>'
+            echo "Nvim closed"
+        else
+            echo "No nvim instance running in this window"
+        fi
+        exit 0
+        ;;
+    notes)
+        # Read notes — review notes (by diff ID) or code notes (by cwd)
+        # Usage: nvc notes [D12345]  — review notes for a diff
+        #        nvc notes            — auto-detect: review context, then cwd-based
+        shift
+        DIFF_ID="${1:-}"
+        if [ -z "$DIFF_ID" ]; then
+            # Try to get from nvim's review context
+            if socket_alive; then
+                DIFF_ID=$(nvim --server "$SOCK" --remote-expr 'get(g:, "review_diff_id", "")' 2>/dev/null || true)
+            fi
+            # Fall back to current commit in the current repo
+            if [ -z "$DIFF_ID" ]; then
+                DIFF_ID=$(sl log --rev . --template '{phabdiff}' 2>/dev/null || git log -1 --format='%H' 2>/dev/null || echo "")
+            fi
+        fi
+
+        # Try review notes first (diff-based)
+        if [ -n "$DIFF_ID" ]; then
+            NOTES_FILE="/tmp/nvc-review-${DIFF_ID}.md"
+            if [ -f "$NOTES_FILE" ] && [ -s "$NOTES_FILE" ]; then
+                cat "$NOTES_FILE"
+                exit 0
+            fi
+        fi
+
+        # Fall back to cwd-based code notes
+        CWD_KEY=$(pwd | sed 's|/|_|g; s|^_||')
+        NOTES_FILE="/tmp/nvc-notes-${CWD_KEY}.md"
+        if [ -f "$NOTES_FILE" ] && [ -s "$NOTES_FILE" ]; then
+            cat "$NOTES_FILE"
+        else
+            echo "No notes found"
+        fi
+        exit 0
+        ;;
+    cmd)
+        # Send raw keys to nvim
+        ensure_nvim_running
+        nvim --server "$SOCK" --remote-send "$2"
+        exit 0
+        ;;
+    expr)
+        # Evaluate expression
+        ensure_nvim_running
+        nvim --server "$SOCK" --remote-expr "$2"
+        exit 0
+        ;;
+    messages)
+        # Get raw :messages
+        ensure_nvim_running
+        nvim --server "$SOCK" --remote-expr 'execute("messages")'
+        exit 0
+        ;;
+    errors)
+        # Extract errors from noice.nvim notifications
+        ensure_nvim_running
+        nvim --server "$SOCK" --remote-send ':lua local f=io.open("/tmp/nvim-cmd-errors.txt","w"); local ok,mgr=pcall(require,"noice.message.manager"); if ok then for _,m in ipairs(mgr.get({error=true},{history=true,sort=true})) do f:write(m:content().."\n") end; for _,m in ipairs(mgr.get({warning=true},{history=true,sort=true})) do f:write(m:content().."\n") end end; f:write(vim.fn.execute("messages")); f:write("\nv:errmsg=" .. vim.v.errmsg); f:close()<CR>'
+        sleep 0.5
+        cat /tmp/nvim-cmd-errors.txt
+        exit 0
+        ;;
+    review)
+        # Review a diff, commit, or rev in diffview
+        shift
+        DIFF_ID="${1:-}"
+
+        # For non-D arguments, resolve hash + repo in the shell's cwd
+        # (nvim may be running in a different repo)
+        REVIEW_REPO=""
+        if [ -n "$DIFF_ID" ] && [[ ! "$DIFF_ID" =~ ^D ]]; then
+            REVIEW_REPO=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || true)
+            REVIEW_HASH=$(sl log --rev "${DIFF_ID}" --template '{node|short}' 2>/dev/null || git rev-parse --short "${DIFF_ID}" 2>/dev/null || true)
+            if [ -z "$REVIEW_HASH" ] || [ -z "$REVIEW_REPO" ]; then
+                echo "Could not resolve '${DIFF_ID}' in $(pwd)" >&2
+                exit 1
+            fi
+            DIFF_ID="$REVIEW_HASH"
+        fi
+
+        # For D* diffs, resolve repo root so nvim can cd there
+        # (nvim's cwd may not be a repo)
+        if [ -n "$DIFF_ID" ] && [[ "$DIFF_ID" =~ ^D ]] && [ -z "$REVIEW_REPO" ]; then
+            REVIEW_REPO=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || true)
+        fi
+
+        if socket_alive; then
+            # Nvim already running — send command directly
+            if [ -n "$DIFF_ID" ]; then
+                if [ -n "$REVIEW_REPO" ]; then
+                    # cd nvim to the correct repo before reviewing
+                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
+                else
+                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID}<CR>"
+                fi
+                echo "Reviewing ${DIFF_ID}" >&2
+            else
+                nvim --server "$SOCK" --remote-send '<Esc>:ReviewDiff<CR>'
+                echo "Opening review picker" >&2
+            fi
+        else
+            # No nvim — spawn with ReviewDiff as startup command
+            [ -e "$SOCK" ] && rm -f "$SOCK"
+            # Use resolved repo, or try shell's repo, or fallback to $HOME
+            if [ -n "$REVIEW_REPO" ]; then
+                REPO_ROOT="$REVIEW_REPO"
+            else
+                REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
+            fi
+            if [ -n "$DIFF_ID" ]; then
+                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
+                echo "Reviewing ${DIFF_ID}" >&2
+            else
+                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
+                echo "Opening review picker" >&2
+            fi
+        fi
+        exit 0
+        ;;
+esac
+
+# ============================================================================
+# File/highlight/diff modes (original nvim-show logic)
+# ============================================================================
+
+CLEAR_HIGHLIGHTS=false
+CLOSE_DIFF=false
+DIFF_MODE=false
+QUERIES=()
+
+if [ $# -lt 1 ]; then
+    echo "Usage: nvc <file>:<line>                         Open file" >&2
+    echo "       nvc --highlight-function <file>:<line>    Highlight function" >&2
+    echo "       nvc --highlight <file>:<line>             Highlight block" >&2
+    echo "       nvc --highlight-lines <file>:<s>-<e>      Highlight lines" >&2
+    echo "       nvc --diff <file>                         Show diff (stdin)" >&2
+    echo "       nvc --clear                               Clear highlights" >&2
+    echo "       nvc review [D12345|hash|.]                Review diff/commit/rev" >&2
+    echo "       nvc debug set-breakpoints <file:line> ...  Set breakpoints" >&2
+    echo "       nvc debug attach                          Start DAP session" >&2
+    echo "       nvc debug clear-breakpoints               Clear breakpoints" >&2
+    echo "       nvc cmd '<keys>'                          Send raw keys" >&2
+    echo "       nvc expr '<expr>'                         Eval expression" >&2
+    echo "       nvc errors                                Get errors" >&2
+    exit 1
+fi
+
+# Check for simple flags
+for arg in "$@"; do
+    if [[ "$arg" == "--clear" ]]; then CLEAR_HIGHLIGHTS=true; fi
+    if [[ "$arg" == "--close-diff" ]]; then CLOSE_DIFF=true; fi
+done
+
+if [ "$CLEAR_HIGHLIGHTS" = true ] || [ "$CLOSE_DIFF" = true ]; then
+    :
+else
+    CURRENT_MODE=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --highlight-function) CURRENT_MODE="function"; shift ;;
+            --highlight) CURRENT_MODE="block"; shift ;;
+            --highlight-lines) CURRENT_MODE="lines"; shift ;;
+            --diff) DIFF_MODE=true; shift ;;
+            *)
+                ARG="$1"; shift
+
+                if [[ "$ARG" == +* ]]; then
+                    if [ ${#QUERIES[@]} -gt 0 ]; then
+                        LAST="${QUERIES[-1]}"
+                        IFS='|' read -r qm qf _ qe <<< "$LAST"
+                        QUERIES[-1]="${qm}|${qf}|${ARG#+}|${qe}"
+                    fi
+                    continue
+                fi
+
+                if [ "$DIFF_MODE" = true ]; then
+                    FILE="$ARG"
+                    [[ "$FILE" == *:* ]] && FILE="${ARG%:*}"
+                    [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+                    QUERIES+=("diff|${FILE}||")
+                    continue
+                fi
+
+                if [ "$CURRENT_MODE" = "lines" ]; then
+                    if [[ "$ARG" =~ ^(.+):([0-9].*) ]]; then
+                        FILE="${BASH_REMATCH[1]}"
+                        RANGES="${BASH_REMATCH[2]}"
+                        [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+                        IFS=',' read -ra RANGE_PARTS <<< "$RANGES"
+                        for rng in "${RANGE_PARTS[@]}"; do
+                            if [[ "$rng" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                                QUERIES+=("lines|${FILE}|${BASH_REMATCH[1]}|${BASH_REMATCH[2]}")
+                            elif [[ "$rng" =~ ^([0-9]+):([0-9]+)$ ]]; then
+                                QUERIES+=("lines|${FILE}|${BASH_REMATCH[1]}|${BASH_REMATCH[2]}")
+                            elif [[ "$rng" =~ ^([0-9]+)$ ]]; then
+                                QUERIES+=("lines|${FILE}|${BASH_REMATCH[1]}|${BASH_REMATCH[1]}")
+                            fi
+                        done
+                    fi
+                elif [ -n "$CURRENT_MODE" ]; then
+                    if [[ "$ARG" == *:* ]]; then
+                        FILE="${ARG%:*}"; LINE="${ARG##*:}"
+                    else
+                        FILE="$ARG"; LINE=""
+                    fi
+                    [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+                    QUERIES+=("${CURRENT_MODE}|${FILE}|${LINE}|")
+                else
+                    if [[ "$ARG" == *:* ]]; then
+                        FILE="${ARG%:*}"; LINE="${ARG##*:}"
+                    else
+                        FILE="$ARG"; LINE=""
+                    fi
+                    [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+                    QUERIES+=("open|${FILE}|${LINE}|")
+                fi
+
+                CURRENT_MODE=""
+                ;;
+        esac
+    done
+fi
+
+# ============================================================================
+# Lua generators
+# ============================================================================
+
+write_highlight_lua() {
+    local lua_queries=""
+    local idx=0
+    while [ $# -gt 0 ]; do
+        local mode="$1" file="$2" line="$3" line_end="$4"
+        shift 4
+        [ $idx -gt 0 ] && lua_queries="${lua_queries},"$'\n'
+        lua_queries="${lua_queries}  { mode = '${mode}', file = '${file}', line = ${line:-0}, line_end = ${line_end:-0} }"
+        idx=$((idx + 1))
+    done
+
+    cat > /tmp/nvim-claude-highlight.lua << LUAEOF
+local queries = {
+${lua_queries}
+}
+
+local ns = vim.api.nvim_create_namespace('claude_highlight')
+vim.api.nvim_set_hl(0, 'ClaudeHighlight', { bg = '#292e42', default = true })
+vim.api.nvim_set_hl(0, 'ClaudeHLSign', { fg = '#7aa2f7', bg = 'NONE', default = true })
+vim.fn.sign_define('ClaudeHL', { text = '▍', texthl = 'ClaudeHLSign' })
+
+local block_types = {
+  function_definition = true, class_definition = true,
+  for_statement = true, while_statement = true, if_statement = true,
+  with_statement = true, try_statement = true,
+  import_statement = true, import_from_statement = true, decorated_definition = true,
+  function_declaration = true, function_item = true,
+  impl_item = true, struct_item = true, enum_item = true,
+  for_expression = true, loop_expression = true, match_expression = true, use_declaration = true,
+}
+
+local function apply_highlight(sr, er)
+  for line = sr, er do
+    vim.api.nvim_buf_set_extmark(0, ns, line, 0, { line_hl_group = 'ClaudeHighlight' })
+    vim.fn.sign_place(0, 'claude_signs', 'ClaudeHL', vim.fn.bufnr(), { lnum = line + 1 })
+  end
+end
+
+local first_line = nil
+local seen_files = {}
+for _, q in ipairs(queries) do
+  if not seen_files[q.file] then seen_files[q.file] = true; vim.cmd('edit ' .. q.file) end
+end
+
+for _, q in ipairs(queries) do
+  if vim.fn.expand('%:p') ~= q.file then vim.cmd('edit ' .. q.file) end
+  if q.mode == 'lines' and q.line_end > 0 then
+    apply_highlight(q.line - 1, q.line_end - 1)
+    if not first_line then first_line = q.line end
+  elseif q.mode == 'function' or q.mode == 'block' then
+    if q.line > 0 then vim.cmd(tostring(q.line)); vim.cmd('normal! ^') end
+    local ok, parser = pcall(vim.treesitter.get_parser, 0)
+    if ok and parser then parser:parse() end
+    local node = vim.treesitter.get_node()
+    if q.mode == 'function' then
+      while node and node:type() ~= 'function_definition' and node:type() ~= 'function_declaration' and node:type() ~= 'function_item' do node = node:parent() end
+    else
+      while node and not block_types[node:type()] do node = node:parent() end
+    end
+    if node then
+      local sr, _, er, _ = node:range()
+      apply_highlight(sr, er)
+      if not first_line then first_line = sr + 1 end
+    end
+  end
+end
+
+if first_line then
+  if vim.fn.expand('%:p') ~= queries[1].file then vim.cmd('edit ' .. queries[1].file) end
+  vim.api.nvim_win_set_cursor(0, { first_line, 0 })
+  vim.cmd('normal! zz')
+end
+
+-- Navigation keymaps
+local function get_regions()
+  local extmarks = vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, {})
+  if #extmarks == 0 then return {} end
+  local regions, lines = {}, {}
+  for _, m in ipairs(extmarks) do lines[#lines+1] = m[2] end
+  table.sort(lines)
+  local cs, ce = nil, nil
+  for _, l in ipairs(lines) do
+    if not cs then cs, ce = l, l
+    elseif l == ce + 1 then ce = l
+    else regions[#regions+1] = cs; cs, ce = l, l end
+  end
+  if cs then regions[#regions+1] = cs end
+  return regions
+end
+
+vim.keymap.set('n', ']c', function()
+  local r = get_regions(); if #r == 0 then return end
+  local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
+  for _, s in ipairs(r) do if s > cur then vim.api.nvim_win_set_cursor(0, {s+1,0}); vim.cmd('normal! zz'); return end end
+  vim.api.nvim_win_set_cursor(0, {r[1]+1,0}); vim.cmd('normal! zz')
+end, { desc = 'Next highlight' })
+
+vim.keymap.set('n', '[c', function()
+  local r = get_regions(); if #r == 0 then return end
+  local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
+  for i = #r, 1, -1 do if r[i] < cur then vim.api.nvim_win_set_cursor(0, {r[i]+1,0}); vim.cmd('normal! zz'); return end end
+  vim.api.nvim_win_set_cursor(0, {r[#r]+1,0}); vim.cmd('normal! zz')
+end, { desc = 'Prev highlight' })
+
+vim.keymap.set('n', '<leader>hx', function()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(b) then vim.api.nvim_buf_clear_namespace(b, ns, 0, -1) end
+  end
+  vim.fn.sign_unplace('claude_signs')
+  vim.notify('Claude highlights cleared')
+end, { desc = 'Clear Claude highlights' })
+LUAEOF
+}
+
+# ============================================================================
+# Open file in nvim
+# ============================================================================
+
+open_in_nvim() {
+    local file="$1" line="$2"
+    ensure_nvim_running
+    local nvim_cmd
+    [ -n "$line" ] && nvim_cmd=":e +${line} ${file}" || nvim_cmd=":e ${file}"
+    nvim --server "$SOCK" --remote-send "<Esc>${nvim_cmd}<CR>"
+    echo "Opened ${file}${line:+:$line}" >&2
+}
+
+# ============================================================================
+# Main dispatch
+# ============================================================================
+
+if [ "$CLEAR_HIGHLIGHTS" = true ]; then
+    if socket_alive; then
+        nvim --server "$SOCK" --remote-send '<Esc>:lua local ns=vim.api.nvim_create_namespace("claude_highlight"); for _,b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) then vim.api.nvim_buf_clear_namespace(b,ns,0,-1) end end; vim.fn.sign_unplace("claude_signs"); vim.notify("Claude highlights cleared")<CR>'
+        echo "Cleared all Claude highlights" >&2
+    else
+        echo "Nothing to clear (no nvim running)" >&2
+    fi
+    exit 0
+fi
+
+if [ "$CLOSE_DIFF" = true ]; then
+    if socket_alive; then
+        nvim --server "$SOCK" --remote-send '<Esc>:windo diffoff<CR>:only<CR>'
+        echo "Closed diff view" >&2
+    else
+        echo "Nothing to close (no nvim running)" >&2
+    fi
+    exit 0
+fi
+
+if [ ${#QUERIES[@]} -eq 0 ]; then
+    echo "Error: no file or query specified" >&2
+    exit 1
+fi
+
+HAS_HIGHLIGHT=false
+HAS_DIFF=false
+for q in "${QUERIES[@]}"; do
+    IFS='|' read -r mode _ _ _ <<< "$q"
+    case "$mode" in
+        function|block|lines) HAS_HIGHLIGHT=true ;;
+        diff) HAS_DIFF=true ;;
+    esac
+done
+
+if [ "$HAS_DIFF" = true ]; then
+    IFS='|' read -r _ FILE _ _ <<< "${QUERIES[0]}"
+    PROPOSED="/tmp/nvim-claude-proposed${FILE##*/}"
+    cat > "$PROPOSED"
+    if socket_alive; then
+        nvim --server "$SOCK" --remote-send '<C-\><C-n>:lua pcall(function() require("dap").terminate() end); vim.cmd("qa!")<CR>' 2>/dev/null
+        sleep 0.5
+    fi
+    [ -e "$SOCK" ] && rm -f "$SOCK"
+    tmux split-window -t "${TMUX_PANE}" -h -l 50% "nvim --listen $SOCK -d $FILE $PROPOSED"
+    echo "Showing diff for ${FILE}" >&2
+
+elif [ "$HAS_HIGHLIGHT" = true ]; then
+    ensure_nvim_running
+    for q in "${QUERIES[@]}"; do
+        IFS='|' read -r _ qfile _ _ <<< "$q"
+        if [ ! -f "$qfile" ]; then echo "Error: file not found: $qfile" >&2; exit 1; fi
+    done
+    LUA_ARGS=()
+    DISPLAY_PARTS=()
+    for q in "${QUERIES[@]}"; do
+        IFS='|' read -r mode file line line_end <<< "$q"
+        LUA_ARGS+=("$mode" "$file" "$line" "$line_end")
+        local_display="${file##*/}:${line}"
+        [ -n "$line_end" ] && [ "$line_end" != "0" ] && local_display="${local_display}-${line_end}"
+        [ "$mode" = "function" ] && local_display="${local_display}(fn)"
+        [ "$mode" = "block" ] && local_display="${local_display}(block)"
+        DISPLAY_PARTS+=("$local_display")
+    done
+    write_highlight_lua "${LUA_ARGS[@]}"
+    nvim --server "$SOCK" --remote-send '<Esc>:luafile /tmp/nvim-claude-highlight.lua<CR>'
+    DISPLAY=$(IFS=', '; echo "${DISPLAY_PARTS[*]}")
+    echo "Highlighted: ${DISPLAY}" >&2
+
+else
+    if [ ${#QUERIES[@]} -eq 1 ]; then
+        IFS='|' read -r _ file line _ <<< "${QUERIES[0]}"
+        [ ! -f "$file" ] && echo "Error: file not found: $file" >&2 && exit 1
+        open_in_nvim "$file" "$line"
+    else
+        ensure_nvim_running
+        for q in "${QUERIES[@]}"; do
+            IFS='|' read -r _ file line _ <<< "$q"
+            [ ! -f "$file" ] && echo "Warning: file not found: $file" >&2 && continue
+            nvim --server "$SOCK" --remote-send "<Esc>:e ${file}<CR>"
+        done
+        IFS='|' read -r _ file line _ <<< "${QUERIES[-1]}"
+        [ -n "$line" ] && nvim --server "$SOCK" --remote-send "<Esc>:${line}<CR>"
+        echo "Opened ${#QUERIES[@]} files in nvim" >&2
+    fi
+fi
