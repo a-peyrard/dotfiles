@@ -7,6 +7,8 @@ target = "linux"
 include = [
     ".aliases",
     ".bin/",
+    ".claude/",
+    ".local/bin/",
     ".config/devbridge/",
     ".config/nvim/",
     ".config/starship.toml",
