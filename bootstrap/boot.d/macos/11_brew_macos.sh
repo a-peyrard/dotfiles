@@ -73,7 +73,7 @@ pkg_install_cask "qlstephen" ${dry_run}
 pkg_install_cask "alfred" ${dry_run}
 pkg_install_cask "firefox" ${dry_run}
 pkg_install_cask "firefox@developer-edition" ${dry_run}
-pkg_install_cask "iterm2" ${dry_run}
+pkg_install_cask "ghostty" ${dry_run}
 pkg_install_cask "visual-studio-code" ${dry_run}
 pkg_install_cask "jetbrains-toolbox" ${dry_run}
 pkg_install_cask "bartender" ${dry_run}
