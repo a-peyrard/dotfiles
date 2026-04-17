@@ -1,0 +1,353 @@
+diff --git a/lua/diffview/vcs/adapters/hg/init.lua b/lua/diffview/vcs/adapters/hg/init.lua
+index 94d2594..23959cd 100644
+--- a/lua/diffview/vcs/adapters/hg/init.lua
++++ b/lua/diffview/vcs/adapters/hg/init.lua
+@@ -51,49 +51,22 @@ function HgAdapter.run_bootstrap()
+     if msg then
+       bs.err = msg
+       logger:error("[HgAdapter] " .. bs.err)
+     end
+   end
+ 
+   if vim.fn.executable(hg_cmd[1]) ~= 1 then
+     return err(fmt("Configured `hg_cmd` is not executable: '%s'", hg_cmd[1]))
+   end
+ 
+-  local out = utils.job(utils.flatten({ hg_cmd, "version" }))
+-  local version = out[1] and out[1]:match("Mercurial .*%(version (%S*)%)") or nil
+-  if not version then
+-    return err("Could not get Mercurial version!")
+-  end
+-
+-  -- Parse version string
+-  local major, minor, patch = version:match("(%d+)%.?(%d*)%.?(%d*)")
+-  if not major then
+-    return err(string.format("Could not parse Mercurial version: %s!", version))
+-  end
+-
+-  local v, target = bs.version, bs.target_version
+-  v.major = tonumber(major)
+-  v.minor = tonumber(minor) or 0
+-  v.patch = tonumber(patch) or 0
+-
+-  bs.version_string = version
+-  bs.target_version_string = fmt("%d.%d.%d", target.major, target.minor, target.patch)
+-
+-  local version_ok = vcs_utils.check_semver(v, target)
+-  if not version_ok then
+-    return err(string.format(
+-      "Mercurial version is outdated! Some functionality might not work as expected, "
+-        .. "or not at all! Current: %s, wanted: %s",
+-      bs.version_string,
+-      bs.target_version_string
+-    ))
+-  end
++  -- Version check disabled for Sapling compatibility
++  -- Sapling outputs "Sapling x.x.x" instead of "Mercurial (version x.x.x)"
+ 
+   bs.ok = true
+ end
+ 
+ function HgAdapter.get_repo_paths(path_args, cpath)
+   local paths = {}
+   local top_indicators = {}
+ 
+   for _, path_arg in ipairs(path_args) do
+     for _, path in ipairs(pl:vim_expand(path_arg, false, true) --[[@as string[] ]]) do
+@@ -204,62 +177,84 @@ end
+ 
+ function HgAdapter:get_show_args(path, rev)
+   return utils.vec_join(self:args(), "cat", "--rev", rev:object_name(), "--", path)
+ end
+ 
+ function HgAdapter:get_log_args(args)
+   return utils.vec_join("log", "--stat", '--rev', args)
+ end
+ 
+ function HgAdapter:get_dir(path)
+-  local out, code = self:exec_sync({ "root", "--template={hgpath}" }, path)
++  local out, code = self:exec_sync({ "root" }, path)
+   if code ~= 0 then
+     return nil
+   end
+   return out[1] and vim.trim(out[1])
+ end
+ 
+ function HgAdapter:get_merge_context()
+   local ret = {}
+ 
+-  local out, code = self:exec_sync({ "debugmergestate", "-Tjson" }, self.ctx.toplevel)
++  local out, code = self:exec_sync({ "debugmergestate" }, self.ctx.toplevel)
+ 
+   if code ~= 0 then
+     return {ours = {}, theirs = {}, base = {}}
+   end
+ 
+-  local data = vim.json.decode(table.concat(out, ""))
++  -- Parse text output instead of JSON (Sapling doesn't support -Tjson)
++  local conflict_commits = {}
++  local conflict_files = {}
++  local conflict_path = nil
++  for _, line in ipairs(out) do
++    local path, state = line:match('file: (%g+) %(record type "%a", state "(%a)"')
++    if path then
++      if state == 'u' then
++        conflict_files[path] = { status = 'U' }
++        conflict_path = path
++      else
++        conflict_path = nil
++      end
++    end
++    if conflict_path then
++      local ancestorlinknode = line:match('extras: ancestorlinknode=(%w+)')
++      if ancestorlinknode then conflict_files[conflict_path].base = ancestorlinknode end
++      local other_path = line:match('other path: (%g+)')
++      if other_path and other_path ~= conflict_path then conflict_files[conflict_path].oldname = other_path end
++    end
++    local local_hash = line:match('^local: (%w+)')
++    if local_hash then conflict_commits['local'] = local_hash end
++    local other_hash = line:match('^other: (%w+)')
++    if other_hash then conflict_commits['other'] = other_hash end
++  end
+ 
+   ret.base = { hash = "" }
+ 
+-  for _, commit in ipairs(data[1].commits) do
+-    if commit.name == "other" then
+-      ret.theirs = { hash = commit.node }
+-      out, code = self:exec_sync({ "log", "--template={branch}", "--rev", commit.node }, self.ctx.toplevel)
++  for name, node in pairs(conflict_commits) do
++    if name == 'other' then
++      ret.theirs = { hash = node }
++      out, code = self:exec_sync({ 'log', '--template={branch}', '--rev', node }, self.ctx.toplevel)
+       if code == 0 then
+         ret.theirs.ref_names = out[1]
+       end
+-    elseif commit.name == "local" then
+-      ret.ours = { hash = commit.node }
+-      out, code = self:exec_sync({ "log", "--template={branch}", "--rev", commit.node }, self.ctx.toplevel)
++    elseif name == 'local' then
++      ret.ours = { hash = node }
++      out, code = self:exec_sync({ 'log', '--template={branch}', '--rev', node }, self.ctx.toplevel)
+       if code == 0 then
+         ret.ours.ref_names = out[1]
+       end
+     end
+   end
+ 
+-  for _, file in ipairs(data[1].files) do
+-    for _, extra in ipairs(file.extras) do
+-      if (extra.key == 'ancestorlinknode' and extra.value ~= HgAdapter.Rev.NULL_TREE_SHA) then
+-        ret.base.hash = extra.value
+-        break
+-      end
++  for _, data in pairs(conflict_files) do
++    if data.base and data.base ~= HgAdapter.Rev.NULL_TREE_SHA then
++      ret.base.hash = data.base
++      break
+     end
+   end
+ 
+   return ret
+ end
+ 
+ ---@param range? { [1]: integer, [2]: integer }
+ ---@param paths string[]
+ ---@param argo ArgObject
+ function HgAdapter:file_history_options(range, paths, argo)
+@@ -518,21 +513,21 @@ function HgAdapter:stream_fh_data(state)
+   local rev_range = state.prepared_log_opts.rev_range and '--rev=' .. state.prepared_log_opts.rev_range or nil
+   local log_opt = { label = "HgAdapter:incremental_fh_data()" }
+ 
+   namestat_job = Job({
+     command = self:bin(),
+     args = utils.vec_join(
+       self:args(),
+       "log",
+       rev_range,
+       '--template=\\x00\n'
+-      .. '{node} {p1.node} {ifeq(p2.rev, -1 ,\"\", \"{p2.node}\")}\n'
++      .. '{node} {p1node} {ifeq(p2rev, -1 ,\"\", \"{p2node}\")}\n'
+       .. '{author|person}\n'
+       .. '{date}\n'
+       .. '{date|age}\n'
+       .. '  {separate(", ", tags, topics)}\n'
+       .. '  {desc|firstline}\n'
+       .. '{files % "{status} {file}\n"}',
+       state.prepared_log_opts.flags,
+       "--",
+       state.path_args
+     ),
+@@ -1051,107 +1046,95 @@ HgAdapter.tracked_files = async.wrap(function (self, left, right, args, kind, op
+       "--deleted",
+       "--template={status} {path}\n",
+       args
+     ),
+     cwd = self.ctx.toplevel,
+     retry = 2,
+     log_opt = log_opt,
+   })
+   local mergestate_job = Job({
+     command = self:bin(),
+-    args = utils.vec_join(self:args(), "debugmergestate", "-Tjson"),
++    args = utils.vec_join(self:args(), "debugmergestate"),
+     cwd = self.ctx.toplevel,
+     retry = 2,
+     log_opt = log_opt,
+   })
+ 
+   local ok = await(Job.join({ namestat_job, mergestate_job }))
+ 
+   if not ok then
+     callback(utils.vec_join(namestat_job.stderr, mergestate_job.stderr), nil)
+     return
+   end
+ 
+-  local namestat_out = namestat_job.stdout
+-  local mergestate_out = mergestate_job.stdout
+-
+-  local data = {}
+-  local conflict_map = {}
+-  local file_info = {}
+-
+-  for _, s in ipairs(namestat_out) do
+-    if s ~= " " then
+-      local status = s:sub(1, 1):gsub("%s", " ")
+-      local name = vim.trim(s:match("[%a%s]%s*(.*)"))
+-
+-      -- TODO(zegervdv): Cannot get correct values from mercurial
+-      -- see https://github.com/sindrets/diffview.nvim/issues/366
++  local files_status = {}
++  for _, s in ipairs(namestat_job.stdout) do
++    if s ~= ' ' then
++      local status = s:sub(1, 1):gsub('%s', ' ')
++      local name = vim.trim(s:match('[%a%s]%s*(.*)'))
+       local stats = {}
+-
+-      if not (kind == "staged") then
+-        file_info[name] = {
++      if not (kind == 'staged') then
++        files_status[name] = {
+           status = status,
+           name = name,
+           stats = stats,
+         }
+       end
+     end
+   end
+ 
+-  local mergestate = vim.json.decode(table.concat(mergestate_out, ''))
+-  for _, file in ipairs(mergestate[1].files) do
+-    local base = nil
+-    for _, extra in ipairs(file.extras) do
+-      if extra.key == 'ancestorlinknode' then
+-        base = extra.value
++  -- Parse debugmergestate text output (Sapling doesn't support -Tjson)
++  local conflict_files = {}
++  local conflict_commits = {}
++  local conflict_path = nil
++  for _, line in ipairs(mergestate_job.stdout) do
++    local path, state = line:match('file: (%g+) %(record type "%a", state "(%a)"')
++    if path then
++      if state == 'u' then
++        conflict_files[path] = { status = 'U' }
++        conflict_path = path
++      else
++        conflict_path = nil
+       end
+     end
+-    if file.state == 'u' then
+-      file_info[file.path].status = 'U'
+-      file_info[file.path].base = base
+-      if file.other_path ~= file.path then
+-        file_info[file.path].oldname = file.other_path
+-      end
+-      conflict_map[file.path] = file_info[file.path]
++    if conflict_path then
++      local ancestorlinknode = line:match('extras: ancestorlinknode=(%w+)')
++      if ancestorlinknode then conflict_files[conflict_path].base = ancestorlinknode end
++      local other_path = line:match('other path: (%g+)')
++      if other_path and other_path ~= conflict_path then conflict_files[conflict_path].oldname = other_path end
+     end
++    local local_hash = line:match('^local: (%w+)')
++    if local_hash then conflict_commits['local'] = local_hash end
++    local other_hash = line:match('^other: (%w+)')
++    if other_hash then conflict_commits['other'] = other_hash end
+   end
+ 
+-  local nodes = {}
+-  for _, commit in ipairs(mergestate[1].commits) do
+-    nodes[commit.name] = commit.node
+-  end
+-
+-  for _, f in pairs(file_info) do
+-    if f.status ~= "U" then
+-      table.insert(data, f)
+-    end
+-  end
+-
+-  if kind == "working" and next(conflict_map) then
+-    for _, v in pairs(conflict_map) do
++  if kind == 'working' and next(conflict_files) then
++    for name, v in pairs(conflict_files) do
+       table.insert(conflicts, FileEntry.with_layout(opt.merge_layout, {
+         adapter = self,
+-        path = v.name,
++        path = name,
+         oldpath = v.oldname,
+-        status = "U",
+-        kind = "conflicting",
++        status = 'U',
++        kind = 'conflicting',
+         revs = {
+-          a = self.Rev(RevType.COMMIT, nodes['local']),
++          a = self.Rev(RevType.COMMIT, conflict_commits['local']),
+           b = self.Rev(RevType.LOCAL),
+-          c = self.Rev(RevType.COMMIT, nodes.other),
++          c = self.Rev(RevType.COMMIT, conflict_commits.other),
+           d = self.Rev(RevType.COMMIT, v.base),
+         }
+       }))
++      files_status[name] = nil
+     end
+   end
+ 
+-  for _, v in ipairs(data) do
++  for name, v in pairs(files_status) do
+     table.insert(files, FileEntry.with_layout(opt.default_layout, {
+       adapter = self,
+       path = v.name,
+       oldpath = v.oldname,
+       status = v.status,
+       stats = v.stats,
+       kind = kind,
+       revs = {
+         a = left,
+         b = right,
+diff --git a/lua/diffview/vcs/init.lua b/lua/diffview/vcs/init.lua
+index ba24a3e..f24ec2d 100644
+--- a/lua/diffview/vcs/init.lua
++++ b/lua/diffview/vcs/init.lua
+@@ -8,21 +8,21 @@ local M = {}
+ ---@field cmd_ctx vcs.init.get_adapter.Opt.Cmd_Ctx? # Context data from a command call.
+ 
+ ---@class vcs.init.get_adapter.Opt.Cmd_Ctx
+ ---@field path_args string[] # Raw path args
+ ---@field cpath string? # Cwd path given by the `-C` flag option
+ 
+ ---@param opt vcs.init.get_adapter.Opt
+ ---@return string? err
+ ---@return VCSAdapter? adapter
+ function M.get_adapter(opt)
+-  local adapter_kinds = { GitAdapter, HgAdapter }
++  local adapter_kinds = { HgAdapter, GitAdapter }
+ 
+   if not opt.cmd_ctx then
+     opt.cmd_ctx = {}
+   end
+ 
+   for _, kind in ipairs(adapter_kinds) do
+     local path_args
+     local top_indicators = opt.top_indicators
+ 
+     if not kind.bootstrap.done then kind.run_bootstrap() end
