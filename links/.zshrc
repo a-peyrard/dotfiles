@@ -1,3 +1,10 @@
+# Load systemd user env vars (THRIFT_TLS_*, etc.) in non-login shells.
+# Needed because tmux uses non-login shells (default-command=$SHELL) to avoid
+# 5-7s systemd delays, but some env vars only get set via login shell-login.d.
+if [[ ! -o login ]] && [[ -f /etc/shell-login.d/00-load-systemd-env.sh ]]; then
+  source /etc/shell-login.d/00-load-systemd-env.sh
+fi
+
 # ~/.zshrc - Zsh configuration without Oh My Zsh
 # Modern setup using Starship prompt and modular env.d configuration
 
