@@ -3,6 +3,7 @@
 return {
   "sindrets/diffview.nvim",
   dependencies = { "nvim-lua/plenary.nvim" },
+  build = "git apply --ignore-whitespace ~/.config/nvim/patches/diffview-sapling.patch",
   cmd = { "DiffviewOpen", "DiffviewClose", "DiffviewFileHistory" },
   keys = {
     { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Open Diffview (conflicts)" },
