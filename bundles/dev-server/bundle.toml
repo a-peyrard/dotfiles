@@ -53,6 +53,26 @@ exclude = [
     ".config/devbridge/handlers/notify",
     ".config/nvim/lua/plugins/codeium.lua",
     ".config/nvim/lazy-lock.json",
+    # Claude runtime data (not config — only deploy CLAUDE.md + commands/)
+    ".claude/file-history/",
+    ".claude/projects/",
+    ".claude/sessions/",
+    ".claude/session-env/",
+    ".claude/plugins/",
+    ".claude/meta/",
+    ".claude/backups/",
+    ".claude/plans/",
+    ".claude/tasks/",
+    ".claude/todos/",
+    ".claude/paste-cache/",
+    ".claude/shell-snapshots/",
+    ".claude/agent-market/",
+    ".claude/gdrive-mount-scripts/",
+    ".claude/history.jsonl",
+    ".claude/settings.json",
+    ".claude/settings.json.*",
+    ".claude/stats-cache.json",
+    ".claude/.claude-templates-manifest.json",
 ]
 
 [runtime]
