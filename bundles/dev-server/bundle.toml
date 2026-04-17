@@ -73,6 +73,8 @@ exclude = [
     ".claude/settings.json.*",
     ".claude/stats-cache.json",
     ".claude/.claude-templates-manifest.json",
+    # Python cache
+    "**/__pycache__/",
 ]
 
 [runtime]
