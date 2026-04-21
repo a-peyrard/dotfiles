@@ -9,7 +9,7 @@
 #   nvc --diff <file>                           Show proposed changes (stdin) as diff
 #   nvc --clear                                 Clear all highlights
 #   nvc --close-diff                            Close diff view
-#   nvc review [D12345|hash|.] [--file path]      Review a diff/commit/rev in diffview
+#   nvc review [D12345|hash|.]                   Review a diff/commit/rev in diffview
 #   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
 #   nvc expr '<vimscript-expr>'                 Evaluate expression, return result
 #   nvc errors                                  Get recent errors (noice-aware)
@@ -250,16 +250,8 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         ;;
     review)
         # Review a diff, commit, or rev in diffview
-        # Usage: nvc review [D12345|hash|.] [--file path/to/file.py]
         shift
-        DIFF_ID=""
-        REVIEW_FILE=""
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --file) REVIEW_FILE="$2"; shift 2 ;;
-                *) [ -z "$DIFF_ID" ] && DIFF_ID="$1"; shift ;;
-            esac
-        done
+        DIFF_ID="${1:-}"
 
         # For non-D arguments, resolve hash + repo in the shell's cwd
         # (nvim may be running in a different repo)
@@ -280,17 +272,16 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
             REVIEW_REPO=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || true)
         fi
 
-        # Build ReviewDiff args: "D12345 /repo/root file:path/to/file.py"
-        REVIEW_ARGS=""
-        [ -n "$DIFF_ID" ] && REVIEW_ARGS="$DIFF_ID"
-        [ -n "$REVIEW_REPO" ] && REVIEW_ARGS="$REVIEW_ARGS $REVIEW_REPO"
-        [ -n "$REVIEW_FILE" ] && REVIEW_ARGS="$REVIEW_ARGS file:$REVIEW_FILE"
-
         if socket_alive; then
             # Nvim already running — send command directly
-            if [ -n "$REVIEW_ARGS" ]; then
-                nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${REVIEW_ARGS}<CR>"
-                echo "Reviewing ${DIFF_ID:-current}${REVIEW_FILE:+ → $REVIEW_FILE}" >&2
+            if [ -n "$DIFF_ID" ]; then
+                if [ -n "$REVIEW_REPO" ]; then
+                    # cd nvim to the correct repo before reviewing
+                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
+                else
+                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID}<CR>"
+                fi
+                echo "Reviewing ${DIFF_ID}" >&2
             else
                 nvim --server "$SOCK" --remote-send '<Esc>:ReviewDiff<CR>'
                 echo "Opening review picker" >&2
@@ -304,9 +295,9 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
             else
                 REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
             fi
-            if [ -n "$REVIEW_ARGS" ]; then
-                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${REVIEW_ARGS}'"
-                echo "Reviewing ${DIFF_ID:-current}${REVIEW_FILE:+ → $REVIEW_FILE}" >&2
+            if [ -n "$DIFF_ID" ]; then
+                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
+                echo "Reviewing ${DIFF_ID}" >&2
             else
                 tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
                 echo "Opening review picker" >&2
@@ -332,7 +323,7 @@ if [ $# -lt 1 ]; then
     echo "       nvc --highlight-lines <file>:<s>-<e>      Highlight lines" >&2
     echo "       nvc --diff <file>                         Show diff (stdin)" >&2
     echo "       nvc --clear                               Clear highlights" >&2
-    echo "       nvc review [D12345|hash|.] [--file path]  Review diff/commit/rev" >&2
+    echo "       nvc review [D12345|hash|.]                Review diff/commit/rev" >&2
     echo "       nvc debug set-breakpoints <file:line> ...  Set breakpoints" >&2
     echo "       nvc debug attach                          Start DAP session" >&2
     echo "       nvc debug clear-breakpoints               Clear breakpoints" >&2
@@ -434,105 +425,9 @@ write_highlight_lua() {
     done
 
     cat > /tmp/nvim-claude-highlight.lua << LUAEOF
-local queries = {
+require("claude.highlight").highlight({
 ${lua_queries}
-}
-
-local ns = vim.api.nvim_create_namespace('claude_highlight')
-vim.api.nvim_set_hl(0, 'ClaudeHighlight', { bg = '#292e42', default = true })
-vim.api.nvim_set_hl(0, 'ClaudeHLSign', { fg = '#7aa2f7', bg = 'NONE', default = true })
-vim.fn.sign_define('ClaudeHL', { text = '▍', texthl = 'ClaudeHLSign' })
-
-local block_types = {
-  function_definition = true, class_definition = true,
-  for_statement = true, while_statement = true, if_statement = true,
-  with_statement = true, try_statement = true,
-  import_statement = true, import_from_statement = true, decorated_definition = true,
-  function_declaration = true, function_item = true,
-  impl_item = true, struct_item = true, enum_item = true,
-  for_expression = true, loop_expression = true, match_expression = true, use_declaration = true,
-}
-
-local function apply_highlight(sr, er)
-  for line = sr, er do
-    vim.api.nvim_buf_set_extmark(0, ns, line, 0, { line_hl_group = 'ClaudeHighlight' })
-    vim.fn.sign_place(0, 'claude_signs', 'ClaudeHL', vim.fn.bufnr(), { lnum = line + 1 })
-  end
-end
-
-local first_line = nil
-local seen_files = {}
-for _, q in ipairs(queries) do
-  if not seen_files[q.file] then seen_files[q.file] = true; vim.cmd('edit ' .. q.file) end
-end
-
-for _, q in ipairs(queries) do
-  if vim.fn.expand('%:p') ~= q.file then vim.cmd('edit ' .. q.file) end
-  if q.mode == 'lines' and q.line_end > 0 then
-    apply_highlight(q.line - 1, q.line_end - 1)
-    if not first_line then first_line = q.line end
-  elseif q.mode == 'function' or q.mode == 'block' then
-    if q.line > 0 then vim.cmd(tostring(q.line)); vim.cmd('normal! ^') end
-    local ok, parser = pcall(vim.treesitter.get_parser, 0)
-    if ok and parser then parser:parse() end
-    local node = vim.treesitter.get_node()
-    if q.mode == 'function' then
-      while node and node:type() ~= 'function_definition' and node:type() ~= 'function_declaration' and node:type() ~= 'function_item' do node = node:parent() end
-    else
-      while node and not block_types[node:type()] do node = node:parent() end
-    end
-    if node then
-      local sr, _, er, _ = node:range()
-      apply_highlight(sr, er)
-      if not first_line then first_line = sr + 1 end
-    end
-  end
-end
-
-if first_line then
-  if vim.fn.expand('%:p') ~= queries[1].file then vim.cmd('edit ' .. queries[1].file) end
-  vim.api.nvim_win_set_cursor(0, { first_line, 0 })
-  vim.cmd('normal! zz')
-end
-
--- Navigation keymaps
-local function get_regions()
-  local extmarks = vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, {})
-  if #extmarks == 0 then return {} end
-  local regions, lines = {}, {}
-  for _, m in ipairs(extmarks) do lines[#lines+1] = m[2] end
-  table.sort(lines)
-  local cs, ce = nil, nil
-  for _, l in ipairs(lines) do
-    if not cs then cs, ce = l, l
-    elseif l == ce + 1 then ce = l
-    else regions[#regions+1] = cs; cs, ce = l, l end
-  end
-  if cs then regions[#regions+1] = cs end
-  return regions
-end
-
-vim.keymap.set('n', ']c', function()
-  local r = get_regions(); if #r == 0 then return end
-  local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
-  for _, s in ipairs(r) do if s > cur then vim.api.nvim_win_set_cursor(0, {s+1,0}); vim.cmd('normal! zz'); return end end
-  vim.api.nvim_win_set_cursor(0, {r[1]+1,0}); vim.cmd('normal! zz')
-end, { desc = 'Next highlight' })
-
-vim.keymap.set('n', '[c', function()
-  local r = get_regions(); if #r == 0 then return end
-  local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
-  for i = #r, 1, -1 do if r[i] < cur then vim.api.nvim_win_set_cursor(0, {r[i]+1,0}); vim.cmd('normal! zz'); return end end
-  vim.api.nvim_win_set_cursor(0, {r[#r]+1,0}); vim.cmd('normal! zz')
-end, { desc = 'Prev highlight' })
-
-vim.keymap.set('n', '<leader>hx', function()
-  for _, b in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(b) then vim.api.nvim_buf_clear_namespace(b, ns, 0, -1) end
-  end
-  vim.fn.sign_unplace('claude_signs')
-  vim.notify('Claude highlights cleared')
-end, { desc = 'Clear Claude highlights' })
+})
 LUAEOF
 }
 
@@ -555,7 +450,7 @@ open_in_nvim() {
 
 if [ "$CLEAR_HIGHLIGHTS" = true ]; then
     if socket_alive; then
-        nvim --server "$SOCK" --remote-send '<Esc>:lua local ns=vim.api.nvim_create_namespace("claude_highlight"); for _,b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) then vim.api.nvim_buf_clear_namespace(b,ns,0,-1) end end; vim.fn.sign_unplace("claude_signs"); vim.notify("Claude highlights cleared")<CR>'
+        nvim --server "$SOCK" --remote-send '<Esc>:lua require("claude.highlight").clear()<CR>'
         echo "Cleared all Claude highlights" >&2
     else
         echo "Nothing to clear (no nvim running)" >&2
