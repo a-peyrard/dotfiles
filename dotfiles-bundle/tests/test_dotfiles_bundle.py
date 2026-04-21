@@ -1327,3 +1327,26 @@ class TestClassifyChanges:
 
         # THEN
         assert result[".config/nvim/lua/plugins/lsp.lua"] == "remote_only"
+
+    def test_no_manifest_files_should_not_be_pull_candidates(self, tmp_path):
+        # GIVEN — file exists locally but not on remote and has no manifest entry
+        # (e.g., a new local script that was never deployed)
+        local_dir, remote_dir = self._setup_dirs(tmp_path)
+        self._write(local_dir, "local-only.sh", "#!/bin/bash\necho hi")
+        self._write(local_dir, "deployed.txt", "original")
+        self._write(remote_dir, "deployed.txt", "modified on remote")
+        manifest = self._make_manifest({"deployed.txt": "original"})
+
+        # WHEN
+        result = classify_changes(
+            local_dir, remote_dir,
+            ["local-only.sh", "deployed.txt"], manifest,
+        )
+        remote_only = [f for f, c in result.items() if c == "remote_only"]
+        no_manifest = [f for f, c in result.items() if c == "no_manifest"]
+        # Pull candidates should only include remote_only + conflict, never no_manifest
+        changed_files = remote_only
+
+        # THEN — local-only.sh must not be a pull candidate
+        assert "local-only.sh" not in changed_files
+        assert "deployed.txt" in changed_files

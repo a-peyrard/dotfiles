@@ -2194,8 +2194,8 @@ def cmd_pull(args):
             except UnicodeDecodeError:
                 pass
 
-        # For backwards compat: changed_files = all non-unchanged for display/apply
-        changed_files = remote_only_files + conflict_files + no_manifest_files
+        # Only files with deployment history are candidates for pull
+        changed_files = remote_only_files + conflict_files
 
         # Detect new remote files (in pulled directories but not in provenance or manifest)
         new_remote_files = []
