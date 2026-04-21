@@ -29,7 +29,7 @@ discover_sessions() {
         local child_pid child_cmd
         child_pid=$(pgrep -P "$pane_pid" 2>/dev/null | head -1) || continue
         [[ -z "$child_pid" ]] && continue
-        child_cmd=$(ps -p "$child_pid" -o comm= 2>/dev/null) || continue
+        child_cmd=$(basename "$(ps -p "$child_pid" -o comm= 2>/dev/null)") || continue
 
         case "$child_cmd" in
             claude|happy) ;;
