@@ -46,6 +46,8 @@ dotfiles_bundle = load_dotfiles_bundle()
 
 # Extract classes and functions from the module
 classify_changes = dotfiles_bundle.classify_changes
+_classify_pullable = dotfiles_bundle._classify_pullable
+_apply_pull_files = dotfiles_bundle._apply_pull_files
 glob_match = dotfiles_bundle.glob_match
 deep_merge = dotfiles_bundle.deep_merge
 format_size = dotfiles_bundle.format_size
@@ -55,6 +57,7 @@ FileResolver = dotfiles_bundle.FileResolver
 OverrideManager = dotfiles_bundle.OverrideManager
 PackageBuilder = dotfiles_bundle.PackageBuilder
 ResolvedFile = dotfiles_bundle.ResolvedFile
+FileProvenance = dotfiles_bundle.FileProvenance
 
 
 # ============================================================================
@@ -1350,3 +1353,159 @@ class TestClassifyChanges:
         # THEN — local-only.sh must not be a pull candidate
         assert "local-only.sh" not in changed_files
         assert "deployed.txt" in changed_files
+
+
+# ============================================================================
+# Pull Helper Tests
+# ============================================================================
+
+
+class TestClassifyPullable:
+    """Tests for _classify_pullable() helper."""
+
+    def _make_provenance(self, fp, has_overrides=False, source_path=None):
+        return FileProvenance(
+            deployed_path=fp,
+            source_type="links",
+            source_path=source_path or Path(f"/fake/{fp}"),
+            has_overrides=has_overrides,
+            override_mode=None,
+        )
+
+    def test_simple_file_should_be_pullable(self):
+        # GIVEN
+        provenance = {"file.txt": self._make_provenance("file.txt")}
+        # WHEN
+        can, cannot = _classify_pullable(["file.txt"], [], provenance, {})
+        # THEN
+        assert can == ["file.txt"]
+        assert cannot == []
+
+    def test_conflict_file_should_not_be_pullable(self):
+        # GIVEN
+        provenance = {"file.txt": self._make_provenance("file.txt")}
+        # WHEN
+        can, cannot = _classify_pullable(["file.txt"], ["file.txt"], provenance, {})
+        # THEN
+        assert can == []
+        assert cannot == ["file.txt"]
+
+    def test_composite_with_unchanged_components_should_be_pullable(self, tmp_path):
+        # GIVEN
+        import hashlib
+        source = tmp_path / "base.conf"
+        source.write_text("original content")
+        content_hash = hashlib.sha256(b"original content").hexdigest()
+
+        provenance = {"app.conf": self._make_provenance("app.conf", has_overrides=True, source_path=source)}
+        manifest_files = {
+            "app.conf": {
+                "components": [{"source": str(source), "hash": content_hash, "mode": "base"}]
+            }
+        }
+        # Temporarily patch REPO_ROOT
+        import dotfiles_bundle
+        old_root = dotfiles_bundle.REPO_ROOT
+        dotfiles_bundle.REPO_ROOT = Path("/")  # so REPO_ROOT / source == source
+        try:
+            can, cannot = _classify_pullable(["app.conf"], [], provenance, manifest_files)
+        finally:
+            dotfiles_bundle.REPO_ROOT = old_root
+        # THEN
+        assert can == ["app.conf"]
+
+    def test_file_without_provenance_should_not_be_pullable(self):
+        # GIVEN — file not in provenance
+        # WHEN
+        can, cannot = _classify_pullable(["unknown.txt"], [], {}, {})
+        # THEN
+        assert can == []
+        assert cannot == ["unknown.txt"]
+
+
+class TestApplyPullFiles:
+    """Tests for _apply_pull_files() helper."""
+
+    def _make_provenance(self, fp, source_path):
+        return FileProvenance(
+            deployed_path=fp,
+            source_type="links",
+            source_path=source_path,
+            has_overrides=False,
+            override_mode=None,
+        )
+
+    def test_should_apply_simple_file(self, tmp_path):
+        # GIVEN
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "file.txt").write_text("remote content")
+
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        (local_dir / "file.txt").write_text("local content")
+
+        target = tmp_path / "source" / "file.txt"
+        target.parent.mkdir(parents=True)
+        target.write_text("local content")
+
+        provenance = {"file.txt": self._make_provenance("file.txt", target)}
+
+        # WHEN
+        applied, pull_applied = _apply_pull_files(["file.txt"], provenance, remote_dir, local_dir, {})
+
+        # THEN
+        assert applied == 1
+        assert "file.txt" in pull_applied
+        assert target.read_text() == "remote content"
+
+    def test_should_skip_deleted_remote_file(self, tmp_path):
+        # GIVEN
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        # file.txt does NOT exist in remote_dir
+
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        target = tmp_path / "source" / "file.txt"
+        target.parent.mkdir(parents=True)
+        target.write_text("local content")
+
+        provenance = {"file.txt": self._make_provenance("file.txt", target)}
+
+        # WHEN
+        applied, pull_applied = _apply_pull_files(["file.txt"], provenance, remote_dir, local_dir, {})
+
+        # THEN
+        assert applied == 0
+        assert target.read_text() == "local content"
+
+    def test_should_apply_multiple_files(self, tmp_path):
+        # GIVEN
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "a.txt").write_text("remote a")
+        (remote_dir / "b.txt").write_text("remote b")
+
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        target_a = tmp_path / "source" / "a.txt"
+        target_b = tmp_path / "source" / "b.txt"
+        target_a.parent.mkdir(parents=True)
+        target_a.write_text("old a")
+        target_b.write_text("old b")
+
+        provenance = {
+            "a.txt": self._make_provenance("a.txt", target_a),
+            "b.txt": self._make_provenance("b.txt", target_b),
+        }
+
+        # WHEN
+        applied, pull_applied = _apply_pull_files(["a.txt", "b.txt"], provenance, remote_dir, local_dir, {})
+
+        # THEN
+        assert applied == 2
+        assert target_a.read_text() == "remote a"
+        assert target_b.read_text() == "remote b"

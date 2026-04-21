@@ -2069,6 +2069,170 @@ def _place_new_file(
     return False
 
 
+def _classify_pullable(changed_files, conflict_files, provenance, manifest_files):
+    """Determine which changed files can be auto-applied during pull.
+
+    Returns (can_apply, cannot_apply) lists.
+    """
+    can_apply = []
+    cannot_apply = []
+    for fp in changed_files:
+        prov = provenance.get(fp)
+        manifest_entry = manifest_files.get(fp, {})
+        manifest_components = manifest_entry.get("components")
+        if fp in conflict_files:
+            cannot_apply.append(fp)
+        elif prov and not prov.has_overrides:
+            can_apply.append(fp)
+        elif prov and prov.has_overrides and manifest_components:
+            local_components_unchanged = True
+            for mc in manifest_components:
+                source_path = REPO_ROOT / mc["source"]
+                if source_path.exists():
+                    current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                    if current_hash != mc["hash"]:
+                        local_components_unchanged = False
+                        break
+                else:
+                    local_components_unchanged = False
+                    break
+            if local_components_unchanged:
+                can_apply.append(fp)
+            else:
+                cannot_apply.append(fp)
+        else:
+            cannot_apply.append(fp)
+    return can_apply, cannot_apply
+
+
+def _apply_pull_files(can_apply, provenance, remote_dir, local_dir, manifest_files):
+    """Apply pulled files to local source. Returns (applied_count, pull_applied_dict)."""
+    applied = 0
+    pull_applied = {}
+    for fp in can_apply:
+        prov = provenance[fp]
+        remote_file = remote_dir / fp
+
+        if prov.has_overrides:
+            manifest_entry = manifest_files.get(fp, {})
+            manifest_comps = manifest_entry.get("components", [])
+            remote_content = remote_file.read_bytes()
+            deployed_content = local_dir / fp
+
+            try:
+                deployed_lines = deployed_content.read_text().splitlines(keepends=True)
+                remote_lines = remote_content.decode().splitlines(keepends=True)
+            except UnicodeDecodeError:
+                info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (binary composite)")
+                continue
+
+            updated_components = 0
+            for mc in manifest_comps:
+                source_path = REPO_ROOT / mc["source"]
+                if not source_path.exists():
+                    continue
+                old_component = source_path.read_bytes()
+                old_hash = hashlib.sha256(old_component).hexdigest()
+                if old_hash != mc["hash"]:
+                    continue
+
+                if mc["mode"] == "base" and len(manifest_comps) == 2:
+                    override_comp = [c for c in manifest_comps if c["mode"] != "base"][0]
+                    override_source = REPO_ROOT / override_comp["source"]
+                    if override_source.exists():
+                        override_content = override_source.read_text()
+                        override_mode = override_comp["mode"]
+                        if override_mode == "prepend":
+                            remote_text = remote_content.decode()
+                            sep = override_content.rstrip() + "\n\n"
+                            if remote_text.startswith(sep):
+                                new_base = remote_text[len(sep):]
+                                source_path.write_text(new_base)
+                                updated_components += 1
+                                try:
+                                    src_rel = source_path.relative_to(REPO_ROOT)
+                                except ValueError:
+                                    src_rel = source_path
+                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
+                                continue
+                        elif override_mode == "append":
+                            remote_text = remote_content.decode()
+                            sep = "\n\n" + override_content
+                            if remote_text.endswith(sep):
+                                new_base = remote_text[:-len(sep)]
+                                source_path.write_text(new_base)
+                                updated_components += 1
+                                try:
+                                    src_rel = source_path.relative_to(REPO_ROOT)
+                                except ValueError:
+                                    src_rel = source_path
+                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
+                                continue
+
+                elif mc["mode"] in ("prepend", "append") and len(manifest_comps) == 2:
+                    base_comp = [c for c in manifest_comps if c["mode"] == "base"][0]
+                    base_source = REPO_ROOT / base_comp["source"]
+                    if base_source.exists():
+                        base_content = base_source.read_text()
+                        remote_text = remote_content.decode()
+                        if mc["mode"] == "prepend":
+                            sep = "\n\n" + base_content
+                            if remote_text.endswith(sep):
+                                new_override = remote_text[:-len(sep)]
+                                source_path.write_text(new_override)
+                                updated_components += 1
+                                try:
+                                    src_rel = source_path.relative_to(REPO_ROOT)
+                                except ValueError:
+                                    src_rel = source_path
+                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
+                                continue
+                        elif mc["mode"] == "append":
+                            sep = base_content.rstrip() + "\n\n"
+                            if remote_text.startswith(sep):
+                                new_override = remote_text[len(sep):]
+                                source_path.write_text(new_override)
+                                updated_components += 1
+                                try:
+                                    src_rel = source_path.relative_to(REPO_ROOT)
+                                except ValueError:
+                                    src_rel = source_path
+                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
+                                continue
+
+                elif mc["mode"] == "replace":
+                    source_path.write_bytes(remote_content)
+                    updated_components += 1
+                    try:
+                        src_rel = source_path.relative_to(REPO_ROOT)
+                    except ValueError:
+                        src_rel = source_path
+                    info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel}")
+                    continue
+
+            if updated_components > 0:
+                applied += 1
+                pull_applied[fp] = str(prov.source_path)
+            else:
+                info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (could not reconcile composite)")
+        else:
+            if not remote_file.exists():
+                info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (deleted on remote)")
+                continue
+            target_path = prov.source_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(remote_file.read_bytes())
+            applied += 1
+            pull_applied[fp] = str(prov.source_path)
+            try:
+                source_rel = prov.source_path.relative_to(REPO_ROOT)
+            except ValueError:
+                source_rel = prov.source_path
+            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {source_rel}")
+
+    return applied, pull_applied
+
+
 def cmd_pull(args):
     """Sync changes FROM server back to local."""
     bundle_name = args.name
@@ -2233,36 +2397,7 @@ def cmd_pull(args):
                 not_yet_deployed.append(fp)
 
         # --- Determine which files can be auto-applied ---
-        can_apply = []
-        cannot_apply = []
-        # Only remote-only and no-manifest files are candidates for pull
-        for fp in changed_files:
-            prov = provenance.get(fp)
-            manifest_entry = manifest_files.get(fp, {})
-            manifest_components = manifest_entry.get("components")
-            if fp in conflict_files:
-                cannot_apply.append(fp)
-            elif prov and not prov.has_overrides:
-                can_apply.append(fp)
-            elif prov and prov.has_overrides and manifest_components:
-                # Composite file: check which components changed locally since deploy
-                local_components_unchanged = True
-                for mc in manifest_components:
-                    source_path = REPO_ROOT / mc["source"]
-                    if source_path.exists():
-                        current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
-                        if current_hash != mc["hash"]:
-                            local_components_unchanged = False
-                            break
-                    else:
-                        local_components_unchanged = False
-                        break
-                if local_components_unchanged:
-                    can_apply.append(fp)
-                else:
-                    cannot_apply.append(fp)
-            else:
-                cannot_apply.append(fp)
+        can_apply, cannot_apply = _classify_pullable(changed_files, conflict_files, provenance, manifest_files)
 
         # --- Display remote-only changes (pullable) ---
         if remote_only_files:
@@ -2426,146 +2561,7 @@ def cmd_pull(args):
                         print("Skipped changed files.")
                         can_apply = []
 
-                for fp in can_apply:
-                    prov = provenance[fp]
-                    remote_file = remote_dir / fp
-
-                    if prov.has_overrides:
-                        # Composite file reconciliation via manifest
-                        # All local components are unchanged (verified earlier),
-                        # so the remote diff is the full set of changes.
-                        # Apply the diff to the deployed version to get updated content,
-                        # then figure out which component(s) the changes belong to.
-                        manifest_entry = manifest_files.get(fp, {})
-                        manifest_comps = manifest_entry.get("components", [])
-                        remote_content = remote_file.read_bytes()
-                        deployed_content = local_dir / fp  # local_dir has the deployed version
-
-                        # Compute diff between deployed and remote
-                        try:
-                            deployed_lines = deployed_content.read_text().splitlines(keepends=True)
-                            remote_lines = remote_content.decode().splitlines(keepends=True)
-                        except UnicodeDecodeError:
-                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (binary composite)")
-                            continue
-
-                        # For each component, check if the diff falls within its range
-                        # Simple approach: write the full remote content back to each
-                        # component source that we can identify has changes
-                        updated_components = 0
-                        for mc in manifest_comps:
-                            source_path = REPO_ROOT / mc["source"]
-                            if not source_path.exists():
-                                continue
-                            old_component = source_path.read_bytes()
-                            old_hash = hashlib.sha256(old_component).hexdigest()
-                            if old_hash != mc["hash"]:
-                                continue  # local component changed, skip
-
-                            # Rebuild composite WITHOUT this component to isolate its contribution
-                            # For now, use a simpler approach: if there's only one override,
-                            # the base and override are concatenated, so we can split
-                            if mc["mode"] == "base" and len(manifest_comps) == 2:
-                                # base + one override: extract the base portion
-                                override_comp = [c for c in manifest_comps if c["mode"] != "base"][0]
-                                override_source = REPO_ROOT / override_comp["source"]
-                                if override_source.exists():
-                                    override_content = override_source.read_text()
-                                    override_mode = override_comp["mode"]
-                                    if override_mode == "prepend":
-                                        # deployed = override + \n\n + base
-                                        # Extract base from remote
-                                        remote_text = remote_content.decode()
-                                        sep = override_content.rstrip() + "\n\n"
-                                        if remote_text.startswith(sep):
-                                            new_base = remote_text[len(sep):]
-                                            source_path.write_text(new_base)
-                                            updated_components += 1
-                                            try:
-                                                src_rel = source_path.relative_to(REPO_ROOT)
-                                            except ValueError:
-                                                src_rel = source_path
-                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
-                                            continue
-                                    elif override_mode == "append":
-                                        # deployed = base + \n\n + override
-                                        remote_text = remote_content.decode()
-                                        sep = "\n\n" + override_content
-                                        if remote_text.endswith(sep):
-                                            new_base = remote_text[:-len(sep)]
-                                            source_path.write_text(new_base)
-                                            updated_components += 1
-                                            try:
-                                                src_rel = source_path.relative_to(REPO_ROOT)
-                                            except ValueError:
-                                                src_rel = source_path
-                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (base extracted)")
-                                            continue
-
-                            elif mc["mode"] in ("prepend", "append") and len(manifest_comps) == 2:
-                                base_comp = [c for c in manifest_comps if c["mode"] == "base"][0]
-                                base_source = REPO_ROOT / base_comp["source"]
-                                if base_source.exists():
-                                    base_content = base_source.read_text()
-                                    remote_text = remote_content.decode()
-                                    if mc["mode"] == "prepend":
-                                        # deployed = override + \n\n + base
-                                        sep = "\n\n" + base_content
-                                        if remote_text.endswith(sep):
-                                            new_override = remote_text[:-len(sep)]
-                                            source_path.write_text(new_override)
-                                            updated_components += 1
-                                            try:
-                                                src_rel = source_path.relative_to(REPO_ROOT)
-                                            except ValueError:
-                                                src_rel = source_path
-                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
-                                            continue
-                                    elif mc["mode"] == "append":
-                                        # deployed = base + \n\n + override
-                                        sep = base_content.rstrip() + "\n\n"
-                                        if remote_text.startswith(sep):
-                                            new_override = remote_text[len(sep):]
-                                            source_path.write_text(new_override)
-                                            updated_components += 1
-                                            try:
-                                                src_rel = source_path.relative_to(REPO_ROOT)
-                                            except ValueError:
-                                                src_rel = source_path
-                                            info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel} (override extracted)")
-                                            continue
-
-                            elif mc["mode"] == "replace":
-                                # Simple replace: write remote content directly
-                                source_path.write_bytes(remote_content)
-                                updated_components += 1
-                                try:
-                                    src_rel = source_path.relative_to(REPO_ROOT)
-                                except ValueError:
-                                    src_rel = source_path
-                                info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {src_rel}")
-                                continue
-
-                        if updated_components > 0:
-                            applied += 1
-                            pull_applied[fp] = str(prov.source_path)
-                        else:
-                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (could not reconcile composite)")
-                    else:
-                        # Simple file: write remote content to source
-                        if not remote_file.exists():
-                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (deleted on remote)")
-                            continue
-                        target_path = prov.source_path
-                        target_path.parent.mkdir(parents=True, exist_ok=True)
-                        target_path.write_bytes(remote_file.read_bytes())
-                        applied += 1
-                        pull_applied[fp] = str(prov.source_path)
-                        try:
-                            source_rel = prov.source_path.relative_to(REPO_ROOT)
-                        except ValueError:
-                            source_rel = prov.source_path
-                        info(f"{Color.GREEN}Applied:{Color.RESET} {fp} -> {source_rel}")
+                applied, pull_applied = _apply_pull_files(can_apply, provenance, remote_dir, local_dir, manifest_files)
 
         # --- Place new files ---
         placed = 0
@@ -2617,6 +2613,328 @@ def cmd_pull(args):
                 print(f"  Manifest updated.")
 
 
+def cmd_sync(args):
+    """Bidirectional sync: pull remote changes, then deploy local changes."""
+    bundle_name = args.name
+
+    dest = load_destination_for_bundle(bundle_name)
+    if not dest:
+        die(
+            f"No destination configured for bundle '{bundle_name}'.\n"
+            f"Create bundles/{bundle_name}/destination.private with:\n"
+            f"  target = \"user@host:~\"\n"
+            f"  ssh_opts = \"\"  # optional"
+        )
+
+    do_apply = args.apply or args.yes
+
+    if do_apply:
+        repo_errors = _check_repos_clean()
+        if repo_errors:
+            print(f"\n{Color.YELLOW}Cannot sync: uncommitted changes detected.{Color.RESET}")
+            for err in repo_errors:
+                print(f"\n{err}")
+            print(f"\nCommit or stash your changes, then run sync again.")
+            sys.exit(1)
+
+    print(f"\nSyncing bundle: {bundle_name}")
+    print(f"Destination: {dest.target}")
+
+    # Build local package
+    resolver = BundleResolver()
+    config = resolver.resolve(bundle_name)
+    file_resolver = FileResolver()
+    files = file_resolver.resolve_bundle(config)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        local_dir = Path(temp_dir) / "local"
+        local_dir.mkdir()
+
+        builder = PackageBuilder(bundle_name, config)
+        for resolved in files:
+            builder._copy_file(resolved, local_dir)
+        builder._copy_additions(local_dir)
+
+        package_dir = local_dir
+
+        provenance = build_provenance_map(bundle_name, files, builder.override_manager)
+        file_paths = sorted(provenance.keys())
+
+        # Pull remote files
+        remote_dir = Path(temp_dir) / "remote"
+        remote_dir.mkdir()
+
+        deployer = Deployer(dest)
+        multiplexing = deployer.start_multiplexing()
+        if multiplexing:
+            print("  SSH connection established.")
+
+        all_includes = list(config.files_include) + list(config.runtime_include)
+        all_excludes = list(config.files_exclude) + list(config.runtime_exclude)
+        for fp in file_paths:
+            prov = provenance.get(fp)
+            if prov and prov.source_type == "addition":
+                if not any(glob_match(p, fp) for p in all_includes):
+                    all_includes.append(fp)
+
+        print("\nFetching remote state...")
+        if not deployer.pull_with_patterns(remote_dir, all_includes, all_excludes):
+            die("Failed to connect to remote")
+
+        # Three-way classification
+        manifest = read_manifest(bundle_name)
+        manifest_files = manifest.get("files", {}) if manifest else {}
+        manifest_files_set = set(manifest_files.keys())
+        all_paths = sorted(set(file_paths) | manifest_files_set)
+
+        classifications = classify_changes(
+            package_dir=local_dir, remote_dir=remote_dir,
+            file_paths=all_paths, manifest=manifest,
+        )
+
+        remote_only_files = [f for f, c in classifications.items() if c == "remote_only"]
+        local_only_files = [f for f, c in classifications.items() if c == "local_only"]
+        conflict_files = [f for f, c in classifications.items() if c == "both"]
+        no_manifest_files = [f for f, c in classifications.items() if c == "no_manifest"]
+
+        pull_ignore = config.pull_ignore
+        if pull_ignore:
+            _ign = lambda fp: any(glob_match(p, fp) for p in pull_ignore)
+            remote_only_files = [f for f in remote_only_files if not _ign(f)]
+            local_only_files = [f for f in local_only_files if not _ign(f)]
+            conflict_files = [f for f in conflict_files if not _ign(f)]
+            no_manifest_files = [f for f in no_manifest_files if not _ign(f)]
+
+        # Detect deleted files
+        deleted_files = []
+        for fp in file_paths:
+            local_file = local_dir / fp
+            remote_file = remote_dir / fp
+            if not remote_file.exists() and local_file.exists():
+                deleted_files.append(fp)
+        if pull_ignore:
+            deleted_files = [f for f in deleted_files if not _ign(f)]
+
+        actually_deleted = [fp for fp in deleted_files if fp in manifest_files]
+
+        # Detect new remote files
+        new_remote_files = []
+        for remote_file in sorted(remote_dir.rglob("*")):
+            if not remote_file.is_file():
+                continue
+            rel = str(remote_file.relative_to(remote_dir))
+            if rel in provenance or rel in classifications:
+                continue
+            if not any(glob_match(p, rel) for p in config.files_include):
+                continue
+            if any(glob_match(ex, rel) for ex in config.files_exclude):
+                continue
+            if pull_ignore and any(glob_match(p, rel) for p in pull_ignore):
+                continue
+            new_remote_files.append(rel)
+
+        # Classify pullable files
+        changed_files = remote_only_files + conflict_files
+        can_pull, cannot_pull = _classify_pullable(changed_files, conflict_files, provenance, manifest_files)
+
+        # Compute line stats for display
+        line_stats = {}
+        for fp in remote_only_files + local_only_files + conflict_files:
+            local_file = local_dir / fp
+            remote_file = remote_dir / fp
+            if not local_file.exists() or not remote_file.exists():
+                continue
+            try:
+                local_lines = local_file.read_text().splitlines()
+                remote_lines = remote_file.read_text().splitlines()
+                diff = list(difflib.unified_diff(local_lines, remote_lines, n=0))
+                ins = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+                dels = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
+                line_stats[fp] = (ins, dels)
+            except UnicodeDecodeError:
+                pass
+
+        # Count unchanged
+        unchanged_count = sum(1 for c in classifications.values() if c == "unchanged")
+
+        # --- Display sync summary ---
+        if not remote_only_files and not local_only_files and not conflict_files and not new_remote_files and not actually_deleted:
+            print("\nAlready in sync.")
+            deployer.stop_multiplexing()
+            return
+
+        if manifest:
+            deployed_at = manifest.get("deployed_at", "unknown")
+            print(f"  Last deploy: {Color.DIM}{deployed_at}{Color.RESET}")
+
+        print(f"\n{Color.CYAN}Sync summary:{Color.RESET}")
+
+        if can_pull:
+            print(f"\n  {len(can_pull)} file(s) to pull (remote -> local):")
+            for fp in can_pull:
+                stats = line_stats.get(fp)
+                stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.RED}-{stats[1]}{Color.RESET}" if stats else ""
+                prov = provenance.get(fp)
+                dest_str = ""
+                if prov:
+                    try:
+                        dest_str = f" -> {prov.source_path.relative_to(REPO_ROOT)}"
+                    except ValueError:
+                        dest_str = f" -> {prov.source_path}"
+                info(f"  {Color.CYAN}<-{Color.RESET} {fp}{dest_str}{stat_str}")
+
+        if local_only_files:
+            print(f"\n  {len(local_only_files)} file(s) to deploy (local -> remote):")
+            for fp in local_only_files:
+                stats = line_stats.get(fp)
+                stat_str = f"  {Color.GREEN}+{stats[0]}{Color.RESET} {Color.RED}-{stats[1]}{Color.RESET}" if stats else ""
+                info(f"  {Color.GREEN}->{Color.RESET} {fp}{stat_str}")
+
+        if conflict_files:
+            print(f"\n  {Color.YELLOW}{len(conflict_files)} conflict(s) — resolve manually (pull or deploy --force):{Color.RESET}")
+            for fp in conflict_files:
+                stats = line_stats.get(fp)
+                stat_str = f"  +{stats[0]} -{stats[1]}" if stats else ""
+                info(f"  {Color.YELLOW}!!{Color.RESET} {fp}{stat_str}")
+
+        if cannot_pull:
+            non_conflict = [fp for fp in cannot_pull if fp not in conflict_files]
+            if non_conflict:
+                print(f"\n  {Color.YELLOW}{len(non_conflict)} composite file(s) — cannot auto-pull:{Color.RESET}")
+                for fp in non_conflict:
+                    info(f"  {Color.YELLOW}??{Color.RESET} {fp}")
+
+        if new_remote_files:
+            print(f"\n  {len(new_remote_files)} new file(s) on remote:")
+            for fp in new_remote_files:
+                info(f"  {Color.CYAN}+ {Color.RESET} {fp}")
+
+        if actually_deleted:
+            print(f"\n  {len(actually_deleted)} deleted file(s) on remote:")
+            for fp in actually_deleted:
+                info(f"  {Color.RED}D {Color.RESET} {fp}")
+
+        if unchanged_count:
+            print(f"\n  {unchanged_count} file(s) unchanged")
+
+        if args.verbose:
+            for fp in can_pull + local_only_files + conflict_files:
+                local_file = local_dir / fp
+                remote_file = remote_dir / fp
+                if local_file.exists() and remote_file.exists():
+                    try:
+                        local_lines = local_file.read_text().splitlines()
+                        remote_lines = remote_file.read_text().splitlines()
+                        diff = difflib.unified_diff(local_lines, remote_lines, fromfile=f"local/{fp}", tofile=f"remote/{fp}", lineterm="")
+                        diff_lines = list(diff)
+                        if diff_lines:
+                            print(f"\n  --- {fp} ---")
+                            for line in diff_lines[:30]:
+                                if line.startswith("+") and not line.startswith("+++"):
+                                    print(f"  {Color.GREEN}{line}{Color.RESET}")
+                                elif line.startswith("-") and not line.startswith("---"):
+                                    print(f"  {Color.RED}{line}{Color.RESET}")
+                                else:
+                                    print(f"  {line}")
+                            if len(diff_lines) > 30:
+                                print(f"  ... {len(diff_lines) - 30} more lines")
+                    except UnicodeDecodeError:
+                        pass
+
+        # --- Dry-run: stop here ---
+        if not do_apply:
+            hints = []
+            if not args.verbose and (can_pull or local_only_files or conflict_files):
+                hints.append(f"Run with {Color.CYAN}-v{Color.RESET} to see diffs.")
+            hints.append(f"Run with {Color.CYAN}--apply{Color.RESET} to execute sync.")
+            if hints:
+                print(f"\n{'  '.join(hints)}")
+            log_operation(bundle_name, "sync", "preview")
+            deployer.stop_multiplexing()
+            return
+
+        # --- Confirmation ---
+        pull_count = len(can_pull)
+        deploy_count = len(local_only_files)
+        if not args.yes:
+            prompt_parts = []
+            if pull_count:
+                prompt_parts.append(f"pull {pull_count}")
+            if deploy_count:
+                prompt_parts.append(f"deploy {deploy_count}")
+            prompt = " and ".join(prompt_parts) + " file(s)"
+            response = input(f"\n{prompt}? [y/N]: ").strip().lower()
+            if response != "y":
+                print("Aborted.")
+                deployer.stop_multiplexing()
+                return
+
+        # --- Phase 1: Pull remote-only changes ---
+        pull_applied = {}
+        if can_pull:
+            print(f"\nPulling {pull_count} file(s)...")
+            _, pull_applied = _apply_pull_files(can_pull, provenance, remote_dir, local_dir, manifest_files)
+
+        # --- Phase 2: Rebuild package after pull ---
+        if pull_applied:
+            rebuild_dir = Path(temp_dir) / "rebuild"
+            rebuild_dir.mkdir()
+            rebuild_builder = PackageBuilder(bundle_name, config)
+            rebuild_files = file_resolver.resolve_bundle(config)
+            for resolved in rebuild_files:
+                rebuild_builder._copy_file(resolved, rebuild_dir)
+            rebuild_builder._copy_additions(rebuild_dir)
+            package_dir = rebuild_dir
+            files = rebuild_files
+            builder = rebuild_builder
+
+        # --- Phase 3: Deploy local-only changes ---
+        deployed_count = 0
+        if deploy_count:
+            # Exclude remote-only, conflicts, and no-manifest from deploy
+            deploy_excludes = remote_only_files + conflict_files + no_manifest_files
+            changes, _ = deployer.preview(package_dir, extra_excludes=deploy_excludes)
+            if changes:
+                print(f"\nBacking up remote files...")
+                backup_ts = backup_remote_files(deployer, changes)
+                if backup_ts:
+                    print(f"  Backed up to ~/{BACKUP_REMOTE_DIR}/{backup_ts}/")
+                else:
+                    print(f"  {Color.YELLOW}Backup failed. Skipping deploy.{Color.RESET}")
+                    changes = []
+
+            if changes:
+                print(f"\nDeploying {len(changes)} file(s)...")
+                success, synced = deployer.deploy(package_dir, extra_excludes=deploy_excludes)
+                if success:
+                    deployed_count = len(synced)
+                else:
+                    print(f"  {Color.YELLOW}Deploy failed.{Color.RESET}")
+
+        # --- Phase 4: Update manifest ---
+        new_manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
+        write_manifest(bundle_name, new_manifest)
+
+        if pull_applied:
+            write_pull_manifest(bundle_name, pull_applied, {})
+
+        # --- Summary ---
+        parts = []
+        if pull_applied:
+            parts.append(f"{len(pull_applied)} pulled")
+        if deployed_count:
+            parts.append(f"{deployed_count} deployed")
+        if conflict_files:
+            parts.append(f"{len(conflict_files)} conflict(s) skipped")
+        if parts:
+            print(f"\nSync complete: {', '.join(parts)}.")
+        else:
+            print("\nSync complete: no changes applied.")
+        log_operation(bundle_name, "sync", ", ".join(parts) if parts else "no changes")
+
+        deployer.stop_multiplexing()
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -2662,6 +2980,14 @@ def main():
     p_pull.add_argument("--apply", action="store_true", help="Write changes back to source files (default: show only)")
     p_pull.add_argument("-y", "--yes", action="store_true", help="Apply without confirmation (implies --apply)")
     p_pull.set_defaults(func=cmd_pull)
+
+    # sync
+    p_sync = subparsers.add_parser("sync", help="Bidirectional sync (pull + deploy)")
+    p_sync.add_argument("name", help="Bundle name")
+    p_sync.add_argument("-v", "--verbose", action="store_true", help="Show diffs for changed files")
+    p_sync.add_argument("--apply", action="store_true", help="Execute sync (default: preview only)")
+    p_sync.add_argument("-y", "--yes", action="store_true", help="Sync without confirmation (implies --apply)")
+    p_sync.set_defaults(func=cmd_sync)
 
     args = parser.parse_args()
 
