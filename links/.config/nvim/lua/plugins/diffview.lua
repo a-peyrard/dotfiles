@@ -34,6 +34,11 @@ return {
           -- Navigation between conflicts
           { "n", "]x", actions.next_conflict, { desc = "Next conflict" } },
           { "n", "[x", actions.prev_conflict, { desc = "Previous conflict" } },
+          -- Navigation between files
+          { "n", "]f", actions.select_next_entry, { desc = "Next file" } },
+          { "n", "[f", actions.select_prev_entry, { desc = "Previous file" } },
+          -- Toggle file panel
+          { "n", "<leader>e", actions.toggle_files, { desc = "Toggle file panel" } },
         },
         file_panel = {
           { "n", "j", actions.next_entry, { desc = "Next entry" } },

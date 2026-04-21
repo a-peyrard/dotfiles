@@ -11,7 +11,7 @@ return {
         transparent = false,
         on_colors = function(colors)
           colors.border = colors.orange
-          colors.bg = "#1a1b26"  -- darker background (night variant)
+          colors.bg = "#0a0b10"  -- darker background
         end,
       })
       vim.cmd([[colorscheme tokyonight-storm]])
