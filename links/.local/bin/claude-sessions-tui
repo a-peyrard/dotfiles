@@ -39,23 +39,6 @@ from textual.widgets import ListItem, ListView, RichLog, Static
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-# ae-inspired phosphor palette
-C_BG = "#101014"
-C_SURFACE = "#181820"
-C_BORDER = "#303040"
-C_TEXT = "#ccccd6"
-C_TEXT_DIM = "#787d87"
-C_HIGHLIGHT = "#1e2841"
-C_PRIMARY = "#00ff88"
-# Status
-C_WORKING = "#d77757"
-C_ATTENTION = "#9ea6e3"
-C_PLAN = "#48968c"
-C_IDLE = "#507850"
-
-
-# ── Data Types ─────────────────────────────────────────────────────────────────
-
 
 class Status(IntEnum):
     NEEDS_INPUT = 1
@@ -63,17 +46,101 @@ class Status(IntEnum):
     IDLE = 3
 
 
-STATUS_META: dict[Status, tuple[str, str]] = {
-    Status.NEEDS_INPUT: ("❓", C_ATTENTION),
-    Status.WORKING:     ("⚙",  C_WORKING),
-    Status.IDLE:        ("●",  C_IDLE),
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    bg: str            # base background (cards, sidebar, screen)
+    surface: str       # elevated surfaces (title bar, key bar)
+    border: str        # borders, separators
+    text: str          # primary text
+    text_dim: str      # secondary/dim text
+    primary: str       # accent color (keybindings, title icon)
+    highlight_bg: str  # selected card background
+    highlight_bar: str # left bar on selected card
+    attention: str     # needs-input text color
+    attention_bg: str  # needs-input card background
+    unread_bg: str     # unread card background
+    unread_dot: str    # unread dot color
+    working: str       # working status color
+    idle: str          # idle status color
+    hover: str         # card hover background
+
+
+THEMES: dict[str, Theme] = {
+    "Phosphor": Theme(
+        name="Phosphor", bg="#101014", surface="#181820", border="#303040",
+        text="#ccccd6", text_dim="#787d87", primary="#00ff88",
+        highlight_bg="#122850", highlight_bar="#4285f4",
+        attention="#9ea6e3", attention_bg="#3d1014",
+        unread_bg="#302010", unread_dot="#ff7b3a",
+        working="#d77757", idle="#507850", hover="#16161d",
+    ),
+    "Tokyo Night": Theme(
+        name="Tokyo Night", bg="#1a1b26", surface="#24283b", border="#3b4261",
+        text="#c0caf5", text_dim="#565f89", primary="#7aa2f7",
+        highlight_bg="#283457", highlight_bar="#7aa2f7",
+        attention="#bb9af7", attention_bg="#2a1f3a",
+        unread_bg="#252a3a", unread_dot="#e0af68",
+        working="#ff9e64", idle="#9ece6a", hover="#1f2335",
+    ),
+    "Catppuccin": Theme(
+        name="Catppuccin", bg="#1e1e2e", surface="#313244", border="#45475a",
+        text="#cdd6f4", text_dim="#6c7086", primary="#cba6f7",
+        highlight_bg="#45475a", highlight_bar="#cba6f7",
+        attention="#f5c2e7", attention_bg="#302030",
+        unread_bg="#2a2a3a", unread_dot="#fab387",
+        working="#fab387", idle="#a6e3a1", hover="#262637",
+    ),
+    "Gruvbox": Theme(
+        name="Gruvbox", bg="#282828", surface="#3c3836", border="#504945",
+        text="#ebdbb2", text_dim="#928374", primary="#fabd2f",
+        highlight_bg="#504945", highlight_bar="#fabd2f",
+        attention="#d3869b", attention_bg="#3c1f1f",
+        unread_bg="#3c3428", unread_dot="#fe8019",
+        working="#fe8019", idle="#b8bb26", hover="#32302f",
+    ),
+    "Nord": Theme(
+        name="Nord", bg="#2e3440", surface="#3b4252", border="#4c566a",
+        text="#eceff4", text_dim="#7b88a1", primary="#88c0d0",
+        highlight_bg="#434c5e", highlight_bar="#88c0d0",
+        attention="#b48ead", attention_bg="#3a2e3a",
+        unread_bg="#343a48", unread_dot="#ebcb8b",
+        working="#d08770", idle="#a3be8c", hover="#353c4a",
+    ),
+    "Dracula": Theme(
+        name="Dracula", bg="#282a36", surface="#44475a", border="#6272a4",
+        text="#f8f8f2", text_dim="#6272a4", primary="#bd93f9",
+        highlight_bg="#44475a", highlight_bar="#bd93f9",
+        attention="#ff79c6", attention_bg="#3a2030",
+        unread_bg="#303040", unread_dot="#ffb86c",
+        working="#ffb86c", idle="#50fa7b", hover="#2e3044",
+    ),
+    "Rosé Pine": Theme(
+        name="Rosé Pine", bg="#191724", surface="#1f1d2e", border="#403d52",
+        text="#e0def4", text_dim="#6e6a86", primary="#ebbcba",
+        highlight_bg="#26233a", highlight_bar="#ebbcba",
+        attention="#c4a7e7", attention_bg="#2a1828",
+        unread_bg="#221f30", unread_dot="#f6c177",
+        working="#f6c177", idle="#9ccfd8", hover="#1e1b2a",
+    ),
 }
 
-# Highlight backgrounds
-C_HIGHLIGHT_BG = "#122850"
-C_ATTENTION_BG = "#3d1014"  # very dark red — needs-input cards
-C_UNREAD_BG = "#302010"     # warm shadow — unread idle cards
-C_UNREAD_DOT = "#ff7b3a"    # vivid orange dot for unread sessions
+# Active theme — module-level reference used by all rendering code
+T: Theme = THEMES["Phosphor"]
+
+
+def _status_meta() -> dict["Status", tuple[str, str]]:
+    return {
+        Status.NEEDS_INPUT: ("●", T.attention),
+        Status.WORKING:     ("●", T.idle),  # green dot, same as tmux statusline
+        Status.IDLE:        ("",  T.idle),   # no icon for idle
+    }
+
+
+# ── Data Types ─────────────────────────────────────────────────────────────────
+
+# Quick-select keys: 1-9 then letters (avoiding q,r,u,p,j,k,tab bindings)
+_QUICK_SELECT = "123456789asdfghlzxcvbnm"
 
 
 @dataclass
@@ -137,14 +204,47 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
+from rich.style import Style as RichStyle
+
+
+def _clean_ansi_bg(text: Text) -> Text:
+    """Remove dark/gray backgrounds from parsed Text, keep colorful ones.
+
+    Works at the Rich style level so compound ANSI sequences are handled correctly.
+    """
+    new_spans = []
+    for span in text._spans:
+        style = span.style
+        if isinstance(style, str):
+            new_spans.append(span)
+            continue
+        if style.bgcolor:
+            try:
+                tc = style.bgcolor.get_truecolor()
+                r, g, b = tc.red, tc.green, tc.blue
+                if max(r, g, b) < 50 and (max(r, g, b) - min(r, g, b)) < 25:
+                    # Dark gray/black — strip the background, keep everything else
+                    style = RichStyle(
+                        color=style.color, bold=style.bold, dim=style.dim,
+                        italic=style.italic, underline=style.underline,
+                        overline=style.overline, strike=style.strike,
+                        blink=style.blink, reverse=style.reverse,
+                    )
+            except (AttributeError, TypeError):
+                pass
+        new_spans.append(span._replace(style=style))
+    text._spans = new_spans
+    return text
+
+
 def _is_chrome(line: str) -> bool:
     """Detect tmux status bar, INSERT mode, bell notification lines."""
     return bool(re.search(r"🧠|💰|💬|-- INSERT --|🔔", _strip_ansi(line)))
 
 
 def _read_state_files() -> dict[str, dict]:
-    """Read all tmux-statusline state files, indexed by pane_id."""
-    state_dir = Path.home() / ".claude-tmux-statusline" / "state"
+    """Read all claude-state files, indexed by pane_id."""
+    state_dir = Path.home() / ".claude-sessions" / "state"
     if not state_dir.exists():
         return {}
     states = {}
@@ -207,7 +307,7 @@ def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) ->
         parts = ps_line.split(None, 2)
         if len(parts) == 3:
             pid, ppid, cmd = parts
-            if cmd in ("claude", "happy"):
+            if cmd.rsplit("/", 1)[-1] in ("claude", "happy"):
                 claude_children.setdefault(ppid, []).append((pid, cmd))
 
     # For each pane, find the deepest claude/happy descendant
@@ -262,6 +362,10 @@ def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) ->
             current_tool = ""
 
         ctx, cost, turns = _extract_metrics(captured)
+        # Carry over metrics from previous refresh if current capture missed them
+        if not ctx and not cost and not turns and target in prev:
+            p = prev[target]
+            ctx, cost, turns = p.context_pct, p.cost, p.turns
 
         sessions.append(Session(
             target=target, pane_id=pane_id, name=name, status=status,
@@ -280,7 +384,7 @@ def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) ->
     return sessions
 
 
-# ── Session Summary ──────────────────────────────────────────────────────────
+# ── Unread Tracking ──────────────────────────────────────────────────────────
 
 
 _CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
@@ -298,6 +402,31 @@ def _load_unread() -> set[str]:
 def _save_unread(targets: set[str]) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _UNREAD_FILE.write_text(json.dumps(list(targets)))
+
+
+_THEME_FILE = _CACHE_DIR / "theme.json"
+
+
+def _load_theme_name() -> str:
+    try:
+        return json.loads(_THEME_FILE.read_text()).get("theme", "Phosphor")
+    except (json.JSONDecodeError, OSError):
+        return "Phosphor"
+
+
+def _save_theme_name(name: str) -> None:
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _THEME_FILE.write_text(json.dumps({"theme": name}))
+
+
+def _set_theme(name: str) -> None:
+    """Set the active theme globally."""
+    global T
+    T = THEMES.get(name, THEMES["Phosphor"])
+
+
+# Initialize theme from persisted setting
+_set_theme(_load_theme_name())
 
 
 # ── Widgets ────────────────────────────────────────────────────────────────────
@@ -324,20 +453,20 @@ class SessionCard(ListItem):
 
     def _card_bg(self, highlighted: bool) -> str:
         if highlighted:
-            return C_HIGHLIGHT_BG
+            return T.highlight_bg
         if self.session.status == Status.NEEDS_INPUT:
-            return C_ATTENTION_BG
+            return T.attention_bg
         if self._unread and self.session.status == Status.IDLE:
-            return C_UNREAD_BG
-        return C_BG
+            return T.unread_bg
+        return T.bg
 
     def render(self) -> Text:
         s = self.session
-        icon, color = STATUS_META[s.status]
+        icon, color = _status_meta()[s.status]
         hl = self.highlighted
         unread = self._unread and s.status != Status.NEEDS_INPUT
         bar = "▎" if hl else " "
-        bar_style = "bold #4285f4" if hl else ""
+        bar_style = f"bold {T.highlight_bar}" if hl else ""
         text = Text()
 
         # Line 1: top spacing
@@ -348,20 +477,23 @@ class SessionCard(ListItem):
         text.append(bar, style=bar_style)
         text.append(" ")
 
-        # Show 1-9 shortcut number
-        if self._index < 9:
-            text.append(f"{self._index + 1} ", style=C_TEXT_DIM)
+        if self._index < len(_QUICK_SELECT):
+            text.append(f"{_QUICK_SELECT[self._index]} ", style=T.text_dim)
 
         if s.status == Status.WORKING:
-            spinner_char = SPINNER[self._spinner_frame % len(SPINNER)]
-            text.append(f"{spinner_char} ", style=f"bold {color}")
+            # Blinking green dot — alternate visibility
+            if self._spinner_frame % 6 < 4:
+                text.append("● ", style=f"bold {T.idle}")
+            else:
+                text.append("  ", style="")
+        elif s.status == Status.NEEDS_INPUT:
+            text.append("● ", style=f"bold {T.attention}")
+        elif unread:
+            text.append("● ", style=T.unread_dot)
         else:
-            text.append(f"{icon} ", style=color)
+            text.append("  ", style="")
 
-        if unread:
-            text.append("● ", style=C_UNREAD_DOT)
-
-        name_color = "#ffffff" if hl or unread else C_TEXT
+        name_color = "#ffffff" if hl or unread else T.text
         text.append(s.name, style=f"bold {name_color}")
         text.append("\n")
 
@@ -370,14 +502,16 @@ class SessionCard(ListItem):
         text.append("  ")
 
         if s.current_tool and s.status == Status.WORKING:
-            text.append(s.current_tool, style=C_TEXT_DIM)
+            text.append(s.current_tool, style=T.text_dim)
         elif s.status == Status.NEEDS_INPUT:
-            text.append("needs your input", style=C_ATTENTION)
+            text.append("needs your input", style=T.attention)
         elif s.status == Status.WORKING:
-            text.append("working...", style=C_TEXT_DIM)
+            text.append("working...", style=T.text_dim)
+        elif unread:
+            text.append("unread", style=T.unread_dot)
         else:
-            text.append("idle", style=C_TEXT_DIM)
-        text.append(f"  {s.target}", style="#505060")
+            text.append("idle", style=T.text_dim)
+        text.append(f"  {s.target}", style=T.text_dim)
         text.append("\n")
 
         # Line 4: bar + metrics
@@ -390,7 +524,7 @@ class SessionCard(ListItem):
             metrics.append(f"💰 {s.cost}")
         if s.turns:
             metrics.append(f"💬 {s.turns}")
-        text.append(" · ".join(metrics) if metrics else "", style=C_TEXT_DIM)
+        text.append(" · ".join(metrics) if metrics else "", style=T.text_dim)
         text.append("\n")
 
         # Line 5: bottom spacing with bar
@@ -439,9 +573,11 @@ class PreviewPanel(RichLog):
         self._last_text = stripped
         self.clear()
         if not ansi_content.strip():
-            self.write(Text("No output", style=C_TEXT_DIM))
+            self.write(Text("No output", style=T.text_dim))
             return
-        self.write(Text.from_ansi(ansi_content))
+        text = Text.from_ansi(ansi_content)
+        _clean_ansi_bg(text)
+        self.write(text)
 
 
 
@@ -496,6 +632,7 @@ class SessionTracker(App[None]):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("u", "toggle_unread", "Unread"),
+        Binding("t", "toggle_theme", "Theme", show=False),
         Binding("p", "toggle_palette", "Palette", show=False),
         Binding("tab", "toggle_focus", "Focus", priority=True),
         Binding("j", "move_down", "Down", show=False),
@@ -511,6 +648,8 @@ class SessionTracker(App[None]):
         self._refresh_count = 0
         self._preview_focused = False
         self._palette_mode = False
+        self._theme_mode = False
+        self._preview_debounce = None
         self._stop = threading.Event()
         # Unread tracking (persisted to disk)
         self._unread_targets: set[str] = _load_unread()
@@ -528,11 +667,7 @@ class SessionTracker(App[None]):
         yield Static("", id="key-bar")
 
     def on_mount(self) -> None:
-        self._update_title_bar(0)
-        self._update_key_bar()
-        # Force backgrounds programmatically — Textual's DEFAULT_CSS overrides our CSS
-        lv = self.query_one("#session-list", ListView)
-        lv.styles.background = "#101014"
+        self._apply_theme()
         self._do_refresh()
         self.query_one("#session-list", ListView).focus()
         self._start_refresh_loop()
@@ -540,28 +675,62 @@ class SessionTracker(App[None]):
         self.set_interval(0.3, self._tick_preview)
         self.set_interval(0.5, self._tick_dwell)
 
+    def _apply_theme(self) -> None:
+        """Apply the active theme to all widgets programmatically."""
+        try:
+            self.screen.styles.background = T.bg
+            title = self.query_one("#title-bar", Static)
+            title.styles.background = T.surface
+            title.styles.color = T.text
+            key = self.query_one("#key-bar", Static)
+            key.styles.background = T.surface
+            key.styles.color = T.text_dim
+            sidebar = self.query_one("#sidebar")
+            sidebar.styles.background = T.bg
+            sidebar.styles.border_right = ("solid", T.border)
+            lv = self.query_one("#session-list", ListView)
+            lv.styles.background = T.bg
+            preview = self.query_one("#preview-container")
+            preview.styles.background = T.bg
+        except NoMatches:
+            pass
+        self._update_title_bar(len(self._sessions))
+        self._update_key_bar()
+        # Refresh all cards with new theme colors
+        try:
+            lv = self.query_one("#session-list", ListView)
+            for child in lv.children:
+                if isinstance(child, SessionCard):
+                    child.styles.background = child._card_bg(child.highlighted)
+                    child.refresh()
+        except NoMatches:
+            pass
+
     def _update_title_bar(self, count: int) -> None:
         text = Text()
-        text.append(" ⚡ ", style=f"bold {C_PRIMARY}")
-        text.append("Claude Sessions", style=f"bold {C_TEXT}")
+        text.append(" ⚡ ", style=f"bold {T.primary}")
+        text.append("Claude Sessions", style=f"bold {T.text}")
         if count:
-            text.append(f"  ({count})", style=C_TEXT_DIM)
+            text.append(f"  ({count})", style=T.text_dim)
 
         # Status counts
         counts: dict[Status, int] = {}
         for s in self._sessions:
             counts[s.status] = counts.get(s.status, 0) + 1
-        labels = {
-            Status.NEEDS_INPUT: ("needs input", C_ATTENTION),
-            Status.WORKING: ("working", C_WORKING),
-            Status.IDLE: ("idle", C_IDLE),
-        }
-        for st, (label, color) in labels.items():
-            if st in counts:
-                text.append(f"  {counts[st]} {label}", style=color)
-        unread_count = len(self._unread_targets)
+        unread_count = sum(1 for s in self._sessions if s.target in self._unread_targets)
+        # Subtract unread from idle so they don't double-count
+        idle_count = counts.get(Status.IDLE, 0) - unread_count
+        if Status.NEEDS_INPUT in counts:
+            text.append("  ● ", style=f"bold {T.attention}")
+            text.append(f"{counts[Status.NEEDS_INPUT]} needs input", style=T.text_dim)
+        if Status.WORKING in counts:
+            text.append("  ● ", style=f"bold {T.idle}")
+            text.append(f"{counts[Status.WORKING]} working", style=T.text_dim)
         if unread_count:
-            text.append(f"  {unread_count} unread", style=C_UNREAD_DOT)
+            text.append("  ● ", style=T.unread_dot)
+            text.append(f"{unread_count} unread", style=T.text_dim)
+        if idle_count > 0:
+            text.append(f"  {idle_count} idle", style=T.text_dim)
         try:
             self.query_one("#title-bar", Static).update(text)
         except NoMatches:
@@ -571,18 +740,18 @@ class SessionTracker(App[None]):
         text = Text()
         if self._preview_focused:
             keys = [("Tab", "Sidebar"), ("↵", "Jump"), ("q", "Back")]
-            text.append(" 🔵 PREVIEW MODE ", style=f"bold #4285f4")
-            text.append(" — keys forwarded to session ", style=C_TEXT_DIM)
+            text.append(" 🔵 PREVIEW MODE ", style=f"bold {T.highlight_bar}")
+            text.append(" — keys forwarded to session ", style=T.text_dim)
         else:
-            keys = [("q", "Quit"), ("↵", "Jump"), ("1-9", "Select"), ("u", "Unread"), ("Tab", "Preview"), ("r", "Refresh")]
+            keys = [("q", "Quit"), ("↵", "Jump"), ("1-9/a-m", "Select"), ("u", "Unread"), ("t", "Theme"), ("Tab", "Preview"), ("r", "Refresh")]
         for i, (key, label) in enumerate(keys):
             if self._preview_focused and i == 0:
                 pass  # already added the mode indicator
             else:
                 if text.plain:
-                    text.append(" · ", style=C_BORDER)
-            text.append(f" {key} ", style=f"bold {C_PRIMARY}")
-            text.append(label, style=C_TEXT_DIM)
+                    text.append(" · ", style=T.border)
+            text.append(f" {key} ", style=f"bold {T.primary}")
+            text.append(label, style=T.text_dim)
         try:
             self.query_one("#key-bar", Static).update(text)
         except NoMatches:
@@ -614,7 +783,7 @@ class SessionTracker(App[None]):
         self._reconcile_list(sessions)
 
     def _reconcile_list(self, sessions: list[Session]) -> None:
-        if self._palette_mode:
+        if self._palette_mode or self._theme_mode:
             return
         self._refresh_count += 1
         self._sessions = sessions
@@ -677,6 +846,13 @@ class SessionTracker(App[None]):
                         break
             elif lv.children:
                 lv.index = 0
+
+        # Force-refresh the highlighted card's visuals (fixes stale highlight
+        # after switching back from another tmux window)
+        hl_child = lv.highlighted_child
+        if isinstance(hl_child, SessionCard):
+            hl_child.styles.background = hl_child._card_bg(True)
+            hl_child.refresh()
 
         self._update_title_bar(len(sessions))
         self._tick_preview()
@@ -777,6 +953,18 @@ class SessionTracker(App[None]):
             pass
 
     def on_list_view_highlighted(self, _event: ListView.Highlighted) -> None:
+        # Live theme preview
+        if self._theme_mode:
+            lv = self.query_one("#session-list", ListView)
+            child = lv.highlighted_child
+            if isinstance(child, ListItem):
+                idx = lv.index
+                theme_names = list(THEMES.keys())
+                if idx is not None and 0 <= idx < len(theme_names):
+                    _set_theme(theme_names[idx])
+                    self._apply_theme()
+            return
+
         # Reset dwell timer on selection change
         session = self._get_selected_session()
         if session:
@@ -798,9 +986,9 @@ class SessionTracker(App[None]):
         try:
             sidebar = self.query_one("#sidebar")
             if self._preview_focused:
-                sidebar.styles.border_right = ("solid", "#4285f4")
+                sidebar.styles.border_right = ("solid", T.highlight_bar)
             else:
-                sidebar.styles.border_right = ("solid", "#303040")
+                sidebar.styles.border_right = ("solid", T.border)
         except NoMatches:
             pass
 
@@ -820,9 +1008,9 @@ class SessionTracker(App[None]):
                 self.action_jump()
             return
 
-        # Number keys 1-9: jump to session by index (like browser tabs)
-        if not self._preview_focused and event.character and event.character in "123456789":
-            idx = int(event.character) - 1
+        # Quick-select: 1-9 then a,s,d,f,g,h,l,z,x,c,v,b,n,m for sessions 10+
+        if not self._preview_focused and event.character and event.character in _QUICK_SELECT:
+            idx = _QUICK_SELECT.index(event.character)
             lv = self.query_one("#session-list", ListView)
             if idx < len(lv.children):
                 lv.index = idx
@@ -864,7 +1052,6 @@ class SessionTracker(App[None]):
             _run(["tmux", "send-keys", "-t", session.target, "-l", event.character])
         event.prevent_default()
         event.stop()
-        # Refresh preview immediately so typing feels responsive
         self._tick_preview()
 
     def action_move_down(self) -> None:
@@ -889,6 +1076,42 @@ class SessionTracker(App[None]):
             self._manual_unread_target = target
         _save_unread(self._unread_targets)
         self._refresh_card(target)
+
+    # ── Theme picker ────────────────────────────────────────────────────────
+
+    def action_toggle_theme(self) -> None:
+        self._theme_mode = not self._theme_mode
+        lv = self.query_one("#session-list", ListView)
+        lv.clear()
+        if self._theme_mode:
+            current_idx = 0
+            for i, (name, theme) in enumerate(THEMES.items()):
+                if name == T.name:
+                    current_idx = i
+                item = ListItem(Static(""))
+                lv.append(item)
+                txt = Text()
+                txt.append("  ", style="")
+                # Color swatch showing key theme colors
+                txt.append("██", style=theme.bg)
+                txt.append("██", style=theme.surface)
+                txt.append("██", style=theme.primary)
+                txt.append("██", style=theme.working)
+                txt.append("██", style=theme.idle)
+                txt.append("██", style=theme.attention)
+                txt.append(f"  {name}", style=f"bold {theme.text}")
+                if name == T.name:
+                    txt.append(" ✓", style=f"bold {theme.primary}")
+                item.query_one(Static).update(txt)
+                item.styles.height = 2
+                item.styles.background = theme.bg
+            if lv.children:
+                lv.index = current_idx
+        else:
+            # Exiting theme mode — persist the current theme
+            _save_theme_name(T.name)
+            self._apply_theme()
+            self._do_refresh()
 
     # ── Palette preview ─────────────────────────────────────────────────────
     _PALETTE = [
@@ -1008,19 +1231,19 @@ class SessionTracker(App[None]):
                 # Render a swatch: colored block + label
                 txt = Text()
                 txt.append("  ████  ", style=f"bold {hex_color}")
-                txt.append(f" {hex_color} ", style=f"bold {C_TEXT}")
-                txt.append(label, style=C_TEXT_DIM)
+                txt.append(f" {hex_color} ", style=f"bold {T.text}")
+                txt.append(label, style=T.text_dim)
                 item.query_one(Static).update(txt)
                 item.styles.height = 2
-                item.styles.background = C_BG
+                item.styles.background = T.bg
             # Also show them as highlight backgrounds
-            lv.append(ListItem(Static(Text("\n── As card backgrounds ──", style=C_TEXT_DIM))))
+            lv.append(ListItem(Static(Text("\n── As card backgrounds ──", style=T.text_dim))))
             for hex_color, label in self._PALETTE[-20:]:
                 item = ListItem(Static(""))
                 lv.append(item)
                 txt = Text()
                 txt.append(f"  ❓ needs your input  ", style="#ffffff")
-                txt.append(f"  {hex_color} {label}", style=C_TEXT_DIM)
+                txt.append(f"  {hex_color} {label}", style=T.text_dim)
                 item.query_one(Static).update(txt)
                 item.styles.height = 2
                 item.styles.background = hex_color
