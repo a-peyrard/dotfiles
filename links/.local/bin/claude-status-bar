@@ -51,6 +51,19 @@ PRIORITY = {"green": 0, "orange": 1, "red": 2}
 COLOR_MAP = {"green": GREEN, "orange": ORANGE, "red": RED, "grey": GREY}
 
 NEEDS_INPUT_TOOLS = {"permission_prompt", "elicitation_dialog"}
+INPUT_DIALOG_INDICATOR = "❯"
+
+
+def has_input_dialog(pane_id):
+    """Screen-scrape to check if the pane is showing a selection dialog (❯ selector)."""
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", "-8"],
+            capture_output=True, text=True, check=True, timeout=2,
+        )
+        return INPUT_DIALOG_INDICATOR in result.stdout
+    except Exception:
+        return False
 
 
 def get_tmux_info():
@@ -240,6 +253,8 @@ def main():
         status = state.get("status", "")
         current_tool = state.get("current_tool") or ""
         classification = classify_agent(status, current_tool)
+        if classification == "needs_input" and not has_input_dialog(pane_id):
+            classification = "working"
         agents[pane_id] = classification
 
         target = pane_to_target.get(pane_id, pane_id)
