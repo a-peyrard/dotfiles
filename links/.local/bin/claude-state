@@ -1,0 +1,117 @@
+#!/bin/bash
+# claude-state — Agent state tracking for Claude Code sessions
+# Usage: claude-state <session-start|prompt-submit|pre-tool-use|stop|notification|session-end>
+# Reads hook JSON from stdin. Writes state files consumed by claude-status-bar and claude-sessions-tui.
+
+EVENT="$1"
+input=$(cat)
+
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+[ -z "$session_id" ] && exit 0
+
+STATE_BASE="$HOME/.claude-sessions/state"
+CACHE_DIR="/tmp/claude-state-$USER/$session_id"
+
+# ── Tmux detection ───────────────────────────────────────────────────────────
+
+resolve_tmux_pane() {
+    [ -n "$TMUX_PANE" ] && return 0
+    [ -n "$TMUX" ] && TMUX_PANE=$(timeout 1 tmux display-message -p '#{pane_id}' 2>/dev/null)
+    [ -n "$TMUX_PANE" ]
+}
+
+# Hot-path events (PreToolUse, UserPromptSubmit) skip the tmux fallback for perf
+case "$EVENT" in
+    pre-tool-use|prompt-submit)
+        [ -z "$TMUX_PANE" ] && exit 0
+        ;;
+    *)
+        resolve_tmux_pane || exit 0
+        ;;
+esac
+
+# ── Tmux env cache ───────────────────────────────────────────────────────────
+
+load_tmux_env() {
+    if [ -f "$CACHE_DIR/tmux-env" ]; then
+        source "$CACHE_DIR/tmux-env"
+    else
+        TMUX_PID=$(timeout 1 tmux display-message -p '#{pid}' 2>/dev/null) || exit 0
+        TMUX_SESSION=$(timeout 1 tmux display-message -p '#{session_name}' 2>/dev/null) || exit 0
+        [[ "$TMUX_PID" =~ ^[0-9]+$ ]] || exit 0
+        mkdir -p "$CACHE_DIR"
+        echo "TMUX_PID=$TMUX_PID" > "$CACHE_DIR/tmux-env"
+        echo "TMUX_SESSION=$TMUX_SESSION" >> "$CACHE_DIR/tmux-env"
+    fi
+}
+
+load_tmux_env
+
+# ── State file helpers ───────────────────────────────────────────────────────
+
+STATE_DIR="$STATE_BASE/$TMUX_PID"
+STATE_FILE="$STATE_DIR/$session_id.json"
+
+write_state() {
+    local status="$1" current_tool="${2:-null}"
+    mkdir -p "$STATE_DIR"
+    local tmp="${STATE_FILE}.tmp.$$"
+    jq -n \
+        --arg sid "$session_id" \
+        --arg pid "$TMUX_PANE" \
+        --argjson tpid "$TMUX_PID" \
+        --arg ts "$TMUX_SESSION" \
+        --arg st "$status" \
+        --arg ss "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg ct "$current_tool" \
+        '{session_id:$sid, pane_id:$pid, tmux_pid:$tpid, tmux_session:$ts,
+          status:$st, status_since:$ss,
+          current_tool:(if $ct == "null" then null else $ct end)}' \
+        > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+# ── Event handlers ───────────────────────────────────────────────────────────
+
+case "$EVENT" in
+    session-start)
+        write_state "idle"
+        ;;
+
+    prompt-submit)
+        write_state "working"
+        ;;
+
+    pre-tool-use)
+        tool_name=$(echo "$input" | jq -r '.tool_name // empty')
+        if [ "$tool_name" = "AskUserQuestion" ]; then
+            write_state "waiting" "$tool_name"
+        else
+            write_state "working" "$tool_name"
+        fi
+        ;;
+
+    stop)
+        write_state "waiting"
+        ;;
+
+    notification)
+        notification_type=$(echo "$input" | jq -r '.notification_type // empty')
+        if [ "$notification_type" = "idle_prompt" ] && [ -f "$STATE_FILE" ]; then
+            prev_status=$(jq -r '.status // empty' "$STATE_FILE" 2>/dev/null)
+            if [ "$prev_status" = "working" ]; then
+                write_state "acknowledged" "$notification_type"
+            else
+                write_state "waiting" "$notification_type"
+            fi
+        else
+            write_state "waiting" "$notification_type"
+        fi
+        ;;
+
+    session-end)
+        rm -f "$STATE_FILE"
+        rm -rf "$CACHE_DIR"
+        ;;
+esac
+
+exit 0
