@@ -149,7 +149,7 @@ Examples:
 
 ## 🔧 LSP (Language Server Protocol)
 
-**Works with: Python, Rust, Go, Lua**
+**Works with: Python, Rust, Go, C/C++, Thrift, Lua**
 
 | Keybinding | Action | Description |
 |------------|--------|-------------|
@@ -202,8 +202,17 @@ Examples:
 ```vim
 :LspInfo               # Show LSP status
 :LspRestart            # Restart LSP server
-:Mason                 # Manage LSP servers
+:checkhealth lsp       # Check LSP health
 ```
+
+**Meta LSP servers** (auto-configured via fb-editor-support):
+- `fb-pyright-ls@meta` — Python
+- `cppls@meta` — C/C++
+- `rust-analyzer@meta` — Rust
+- `gopls@meta` — Go
+- `thriftlsp@meta` — Thrift
+- `buckls@meta` / `buck2@meta` — Buck/Starlark
+- `linttool@meta` — Linting
 
 ---
 
@@ -277,25 +286,11 @@ Jump to any visible location with labels!
 
 ---
 
-## 🤖 AI Completion (Codeium)
+## 🤖 AI Completion (Code Compose)
 
-**Free inline AI code suggestions (like GitHub Copilot)**
+**Meta's inline AI code suggestions**
 
-| Keybinding | Action |
-|------------|--------|
-| `Ctrl+l` | Accept suggestion |
-| `Alt+]` | Next suggestion |
-| `Alt+[` | Previous suggestion |
-| `Ctrl+e` | Dismiss suggestion |
-
-### First Time Setup
-```vim
-:Codeium Auth            # Authenticate (free account required)
-:Codeium Enable          # Enable (on by default)
-:Codeium Disable         # Disable temporarily
-```
-
-**Note:** Not included in dev-server bundle (proprietary AI completion used there instead).
+Code Compose provides ghost text suggestions as you type. Configured via fb-editor-support.
 
 ---
 
@@ -363,8 +358,11 @@ Jump to any visible location with labels!
 ### Navigation (inside Diffview)
 | Keybinding | Action |
 |------------|--------|
+| `]f` | Next file in diff |
+| `[f` | Previous file in diff |
 | `]x` | Jump to next conflict |
 | `[x` | Jump to previous conflict |
+| `<leader>e` | Toggle file panel |
 | `j` / `k` | Navigate file panel |
 | `Enter` | Open entry |
 | `q` | Close Diffview |
@@ -387,6 +385,47 @@ Jump to any visible location with labels!
 6. Press `]x` for next conflict
 7. Press `q` to close when done
 8. Save with `:w` and continue merge/rebase
+
+### Diff Review (Phabricator)
+| Keybinding | Action |
+|------------|--------|
+| `<leader>hv` | Review diff (Telescope picker of your diffs) |
+| `:ReviewDiff D12345` | Review a specific Phabricator diff |
+| `:ReviewDiff .` | Review current commit |
+| `:ReviewDiff <hash>` | Review a specific commit |
+| `<leader>hV` | View Phabricator inline comments |
+
+### Review Notes
+| Keybinding | Action |
+|------------|--------|
+| `<leader>nc` | Add review note at cursor (normal) or selection (visual) |
+| `<leader>ne` | Edit note at cursor (pre-fills existing text) |
+| `<leader>nd` | Delete note at cursor |
+| `<leader>nl` | List all notes (Telescope picker with preview) |
+| `<leader>nx` | Clear all review notes |
+
+**In note input:** `Ctrl-S` save, `q` close, `Esc` enters normal mode
+**Notes display as diagnostics (HINT)** — navigate with `]d`/`[d`
+
+---
+
+## 📋 Yank / Copy
+
+| Keybinding | Action |
+|------------|--------|
+| `<leader>yf` | Copy absolute file path to clipboard |
+| `<leader>yl` | Copy Codehub link with line number (normal) or line range (visual) |
+| `<leader>yd` | Open Phabricator diff that last modified current line |
+
+---
+
+## 🔀 Toggles
+
+| Keybinding | Action |
+|------------|--------|
+| `<leader>um` | Toggle markdown inline preview |
+| `<leader>ua` | Toggle autosave |
+| `<leader>ul` | Toggle diagnostic display (virtual_text / lsp_lines) |
 
 ---
 
@@ -626,12 +665,12 @@ The debug adapters (debugpy for Python, codelldb for Rust, delve for Go) are aut
 :Lazy check            # Check for updates
 ```
 
-### Mason (LSP/Formatters)
+### Meta LSP
+Meta LSP servers are configured via `fb-editor-support` plugin.
 ```vim
-:Mason                 # Open Mason UI
-:MasonInstall <name>   # Install package
-:MasonUninstall <name> # Uninstall package
-:MasonUpdate           # Update all packages
+:LspInfo               # Show active LSP clients
+:LspRestart            # Restart LSP servers
+:SyncMetaLS            # Sync Meta VSCode extensions (LSP binaries)
 ```
 
 ---
@@ -750,22 +789,22 @@ Then:
 - `<leader>ff` - Find files
 - `<leader>fg` - Live grep
 - `<leader>e` - File explorer
-- `<leader>ts` - Test explorer sidebar
-- `<leader>tt` - Run test under cursor
 - `s{char}{char}` - Flash navigation
 - `gd` - Go to definition
 - `K` - Show hover docs/type info
 - `gK` - Show function signature (works in params!)
 - `gl` - Show error/diagnostic message
-- `Ctrl+w w` - Enter floating window (to scroll long docs)
 - `<leader>ca` - Code actions (fixes!)
 - `<leader>cf` - Format
-- `Ctrl+l` - Accept AI suggestion (Codeium)
 - `]d` / `[d` - Next/Previous diagnostic
 - `Ctrl+h/j/k/l` - Navigate splits/tmux
 - `yy` - Copy line (to system clipboard!)
 - `{number}j/k` - Jump using relative line numbers
-- `:noh` - Clear search highlights
+
+**Yank / Copy:**
+- `<leader>yf` - Copy file path
+- `<leader>yl` - Copy Codehub link (with line)
+- `<leader>yd` - Open diff that modified this line
 
 **Debugging:**
 - `<leader>db` - Toggle breakpoint
@@ -780,12 +819,19 @@ Then:
 - `<leader>du` - Toggle debug UI
 - `<leader>dt` - Terminate debug session
 
+**Diff Review:**
+- `<leader>hv` - Review diff (picker)
+- `<leader>yl` - Codehub link
+- `]f` / `[f` - Next/prev file in diffview
+- `<leader>nc` - Add review note
+
 **Enhanced Features:**
 - System clipboard auto-enabled (copy/paste anywhere!)
 - Relative line numbers (see gutter for jump distances)
 - Persistent undo (survives file closes)
 - Persistent breakpoints (saved per project across sessions)
 - Smart case-sensitive search
-- Indent guides with scope highlighting
+- Inline markdown preview (`<leader>um`)
+- Diff views show all lines (no folding)
 
 **Remember:** When stuck, press `<leader>` (Space) and wait for which-key to show options! Or use `<leader>fk` to search keymaps.
