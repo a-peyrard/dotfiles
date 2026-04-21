@@ -2553,6 +2553,9 @@ def cmd_pull(args):
                             info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (could not reconcile composite)")
                     else:
                         # Simple file: write remote content to source
+                        if not remote_file.exists():
+                            info(f"{Color.YELLOW}Skipped:{Color.RESET} {fp} (deleted on remote)")
+                            continue
                         target_path = prov.source_path
                         target_path.parent.mkdir(parents=True, exist_ok=True)
                         target_path.write_bytes(remote_file.read_bytes())
