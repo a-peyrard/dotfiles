@@ -1810,6 +1810,15 @@ def cmd_deploy(args):
             f"  ssh_opts = \"\"  # optional"
         )
 
+    # -y/--yes implies --apply
+    do_deploy = args.apply or args.yes
+
+    repo_errors = _check_repos_clean()
+    if repo_errors:
+        print(f"\n{Color.YELLOW}Warning: uncommitted changes detected — deploy may be incomplete.{Color.RESET}")
+        for err in repo_errors:
+            print(f"\n{err}")
+
     print(f"\nBuilding bundle: {bundle_name}")
     print(f"Destination: {dest.target}")
 
@@ -2250,15 +2259,19 @@ def cmd_pull(args):
     # -y/--yes implies --apply
     do_apply = args.apply or args.yes
 
-    # Clean repo gate: refuse to apply if repos have uncommitted changes
-    if do_apply:
-        repo_errors = _check_repos_clean()
-        if repo_errors:
+    # Clean repo check: block apply, warn in preview
+    repo_errors = _check_repos_clean()
+    if repo_errors:
+        if do_apply:
             print(f"\n{Color.YELLOW}Cannot apply: uncommitted changes detected.{Color.RESET}")
             for err in repo_errors:
                 print(f"\n{err}")
             print(f"\nCommit or stash your changes, then run pull again.")
             sys.exit(1)
+        else:
+            print(f"\n{Color.YELLOW}Warning: uncommitted changes detected — preview may be incomplete.{Color.RESET}")
+            for err in repo_errors:
+                print(f"\n{err}")
 
     print(f"\nPulling from: {dest.target}")
     print(f"Bundle: {bundle_name}")
@@ -2628,14 +2641,18 @@ def cmd_sync(args):
 
     do_apply = args.apply or args.yes
 
-    if do_apply:
-        repo_errors = _check_repos_clean()
-        if repo_errors:
+    repo_errors = _check_repos_clean()
+    if repo_errors:
+        if do_apply:
             print(f"\n{Color.YELLOW}Cannot sync: uncommitted changes detected.{Color.RESET}")
             for err in repo_errors:
                 print(f"\n{err}")
             print(f"\nCommit or stash your changes, then run sync again.")
             sys.exit(1)
+        else:
+            print(f"\n{Color.YELLOW}Warning: uncommitted changes detected — preview may be incomplete.{Color.RESET}")
+            for err in repo_errors:
+                print(f"\n{err}")
 
     print(f"\nSyncing bundle: {bundle_name}")
     print(f"Destination: {dest.target}")
