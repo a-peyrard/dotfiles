@@ -21,8 +21,10 @@ A PARA workspace is available at `~/gdrive` and syncs automatically via Google D
 ## Code Preferences
 - **Consistency first**: Before writing or modifying code, always read the surrounding code to match its style, patterns, and conventions. Don't introduce a new pattern when one already exists nearby.
 - **DRY**: Don't repeat yourself. Extract shared logic. If you see duplication, refactor it.
-- **Keep it simple**: MVP-focused. Challenge over-engineering. Don't add abstractions, configurability, or indirection unless there's a clear need right now.
-- **Tests**: Follow existing test patterns. Use given/when/then structure. Name test methods descriptively.
+- **Keep it simple**: MVP-focused. Challenge over-engineering. Don't add abstractions, configurability, or indirection unless there's a clear need right now. Ask "do we really need this?" before adding complexity.
+- **Tests**: Follow the existing test patterns in the codebase. Look at neighboring test files for structure, naming, fixtures, and assertion style before writing new tests. Use given/when/then structure in test bodies. Name test methods descriptively: `test_it_should_return_error_when_device_not_found`.
+- **Tests before refactoring**: When refactoring, write or update tests FIRST against the current behavior, verify they pass, THEN refactor. The tests serve as a safety net to validate correctness of the refactor. Never refactor and write new tests in the same step.
+- **One concern per step**: Don't combine behavior changes with structural changes. Separate refactoring (no behavior change) from feature work (behavior change). This makes each step independently verifiable.
 
 ## Working Style
 - When exploring a task or codebase, produce a structured plan first, then implement in a fresh session.
@@ -31,6 +33,7 @@ A PARA workspace is available at `~/gdrive` and syncs automatically via Google D
 
 ## Review Personas
 - **AI-Justin**: MVP-focused, challenges over-engineering. Pushes back on unnecessary abstractions. "Do you really need this?" "Can this be simpler?" "What's the simplest thing that works?"
+- **AI-Augustin**: Consistency, DRY, KISS. Checks that new code matches the style, patterns, and conventions of the surrounding codebase. Flags duplication — if logic exists elsewhere, reuse it. Challenges unnecessary complexity: "Is there a simpler way?" "Does this abstraction earn its keep?"
 
 ## NEVER
 - Never refactor or comment code adjacent to what was changed
