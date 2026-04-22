@@ -60,9 +60,9 @@ def main():
 
     cmd = ["tmux", "new-window", "-n", "nvim-remote", "-t", f"{session}:{idx}"]
     if line and line != "0":
-        cmd.append(f"nvim +{line} {filepath}")
+        cmd.append(f"nvc --full-screen {filepath}:{line}")
     else:
-        cmd.append(f"nvim {filepath}")
+        cmd.append(f"nvc --full-screen {filepath}")
 
     subprocess.run(cmd)
     print(f"Opened {filepath}:{line} in {session}:{idx}")
