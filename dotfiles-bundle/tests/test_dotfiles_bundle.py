@@ -48,6 +48,9 @@ dotfiles_bundle = load_dotfiles_bundle()
 classify_changes = dotfiles_bundle.classify_changes
 _classify_pullable = dotfiles_bundle._classify_pullable
 _apply_pull_files = dotfiles_bundle._apply_pull_files
+_place_new_file = dotfiles_bundle._place_new_file
+_place_new_remote_files = dotfiles_bundle._place_new_remote_files
+_prompt_new_file_placement = dotfiles_bundle._prompt_new_file_placement
 glob_match = dotfiles_bundle.glob_match
 deep_merge = dotfiles_bundle.deep_merge
 format_size = dotfiles_bundle.format_size
@@ -1509,3 +1512,283 @@ class TestApplyPullFiles:
         assert applied == 2
         assert target_a.read_text() == "remote a"
         assert target_b.read_text() == "remote b"
+
+
+# ============================================================================
+# Place New File Tests
+# ============================================================================
+
+
+class TestPlaceNewFile:
+    """Tests for _place_new_file() — placing new remote files into the repo."""
+
+    def _patch_globals(self, monkeypatch, repo_root, private_dir=None):
+        """Patch module globals to point at temp directories."""
+        monkeypatch.setattr(dotfiles_bundle, "REPO_ROOT", repo_root)
+        monkeypatch.setattr(dotfiles_bundle, "LINKS_DIR", repo_root / "links")
+        if private_dir:
+            monkeypatch.setenv("DOTFILES_PRIVATE", str(private_dir))
+        else:
+            monkeypatch.delenv("DOTFILES_PRIVATE", raising=False)
+
+    def test_should_place_file_as_public_addition(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        (repo_root / "bundles" / "dev-server").mkdir(parents=True)
+        self._patch_globals(monkeypatch, repo_root)
+
+        # WHEN
+        result = _place_new_file(
+            ".local/bin/my-script", b"#!/bin/bash\necho hi", "public", "dev-server", mode=0o755
+        )
+
+        # THEN
+        assert result is True
+        placed = repo_root / "bundles" / "dev-server" / ".local/bin/my-script.add"
+        assert placed.exists()
+        assert placed.read_bytes() == b"#!/bin/bash\necho hi"
+        assert placed.stat().st_mode & 0o755 == 0o755
+
+    def test_should_place_file_as_private_addition(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        private_dir = tmp_path / "dotfiles-private"
+        (repo_root / "bundles" / "dev-server").mkdir(parents=True)
+        private_dir.mkdir()
+        self._patch_globals(monkeypatch, repo_root, private_dir)
+
+        # WHEN
+        result = _place_new_file(
+            ".local/bin/my-script", b"#!/bin/bash\necho hi", "private", "dev-server", mode=0o755
+        )
+
+        # THEN
+        assert result is True
+        private_path = private_dir / "bundles" / "dev-server" / ".local/bin/my-script.add.private"
+        assert private_path.exists()
+        assert private_path.read_bytes() == b"#!/bin/bash\necho hi"
+        symlink = repo_root / "bundles" / "dev-server" / ".local/bin/my-script.add.private"
+        assert symlink.is_symlink()
+        assert symlink.resolve() == private_path.resolve()
+
+    def test_should_place_file_as_base_public(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        (repo_root / "links").mkdir(parents=True)
+        self._patch_globals(monkeypatch, repo_root)
+
+        # WHEN
+        result = _place_new_file(
+            ".local/bin/my-script", b"#!/bin/bash\necho hi", "base", "dev-server", mode=0o755
+        )
+
+        # THEN
+        assert result is True
+        placed = repo_root / "links" / ".local/bin/my-script"
+        assert placed.exists()
+        assert placed.read_bytes() == b"#!/bin/bash\necho hi"
+
+    def test_should_return_false_for_skip(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        repo_root.mkdir()
+        self._patch_globals(monkeypatch, repo_root)
+
+        # WHEN
+        result = _place_new_file(".bin/script", b"content", "skip", "dev-server")
+
+        # THEN
+        assert result is False
+
+    def test_should_fail_when_private_dir_missing(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        repo_root.mkdir()
+        nonexistent = tmp_path / "no-such-dir"
+        self._patch_globals(monkeypatch, repo_root, nonexistent)
+
+        # WHEN
+        result = _place_new_file(".bin/script", b"content", "private", "dev-server")
+
+        # THEN
+        assert result is False
+
+    def test_should_preserve_file_mode(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        (repo_root / "bundles" / "dev-server").mkdir(parents=True)
+        self._patch_globals(monkeypatch, repo_root)
+
+        # WHEN
+        _place_new_file(".bin/script", b"content", "public", "dev-server", mode=0o644)
+
+        # THEN
+        placed = repo_root / "bundles" / "dev-server" / ".bin/script.add"
+        assert placed.stat().st_mode & 0o777 == 0o644
+
+    def test_should_replace_existing_symlink_for_private(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        private_dir = tmp_path / "dotfiles-private"
+        private_dir.mkdir()
+        self._patch_globals(monkeypatch, repo_root, private_dir)
+        # Create a stale symlink
+        symlink_path = repo_root / "bundles" / "dev-server" / ".bin/script.add.private"
+        symlink_path.parent.mkdir(parents=True)
+        symlink_path.symlink_to("/nonexistent")
+
+        # WHEN
+        result = _place_new_file(".bin/script", b"new content", "private", "dev-server")
+
+        # THEN
+        assert result is True
+        assert not symlink_path.is_symlink() or symlink_path.resolve() != Path("/nonexistent")
+        private_path = private_dir / "bundles" / "dev-server" / ".bin/script.add.private"
+        assert private_path.read_bytes() == b"new content"
+
+
+class TestPromptNewFilePlacement:
+    """Tests for _prompt_new_file_placement() — interactive menu."""
+
+    def test_should_return_private_for_choice_1(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "private"
+
+    def test_should_default_to_private_on_empty_input(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "private"
+
+    def test_should_return_public_for_choice_2(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "public"
+
+    def test_should_return_base_for_choice_3(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "3")
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "base"
+
+    def test_should_return_skip_for_choice_s(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "s")
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "skip"
+
+    def test_should_retry_on_invalid_then_accept_valid(self, monkeypatch):
+        # GIVEN
+        inputs = iter(["x", "9", "2"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        # WHEN
+        result = _prompt_new_file_placement(".bin/script", "dev-server")
+
+        # THEN
+        assert result == "public"
+
+
+# ============================================================================
+# Place New Remote Files (shared helper) Tests
+# ============================================================================
+
+
+class TestPlaceNewRemoteFiles:
+    """Tests for _place_new_remote_files() — the shared orchestrator used by both pull and sync."""
+
+    def _patch_globals(self, monkeypatch, repo_root):
+        monkeypatch.setattr(dotfiles_bundle, "REPO_ROOT", repo_root)
+        monkeypatch.setattr(dotfiles_bundle, "LINKS_DIR", repo_root / "links")
+        monkeypatch.delenv("DOTFILES_PRIVATE", raising=False)
+
+    def test_should_place_files_interactively(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        (repo_root / "bundles" / "dev-server").mkdir(parents=True)
+        self._patch_globals(monkeypatch, repo_root)
+
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / ".bin" / "new-script").parent.mkdir(parents=True)
+        (remote_dir / ".bin" / "new-script").write_bytes(b"#!/bin/bash\necho hi")
+        (remote_dir / ".bin" / "new-script").chmod(0o755)
+
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+
+        # WHEN
+        placed = _place_new_remote_files(
+            [".bin/new-script"], remote_dir, "dev-server", auto_yes=False
+        )
+
+        # THEN
+        assert ".bin/new-script" in placed
+        assert placed[".bin/new-script"] == "public"
+        assert (repo_root / "bundles" / "dev-server" / ".bin/new-script.add").exists()
+
+    def test_should_skip_all_with_auto_yes(self, tmp_path, monkeypatch):
+        # GIVEN
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "file.txt").write_text("content")
+
+        # WHEN
+        placed = _place_new_remote_files(
+            ["file.txt"], remote_dir, "dev-server", auto_yes=True
+        )
+
+        # THEN
+        assert placed == {}
+
+    def test_should_return_empty_for_no_files(self):
+        # GIVEN / WHEN
+        placed = _place_new_remote_files([], Path("/fake"), "dev-server", auto_yes=False)
+
+        # THEN
+        assert placed == {}
+
+    def test_should_skip_individual_files(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        (repo_root / "bundles" / "dev-server").mkdir(parents=True)
+        self._patch_globals(monkeypatch, repo_root)
+
+        remote_dir = tmp_path / "remote"
+        remote_dir.mkdir()
+        (remote_dir / "a.txt").write_text("content a")
+        (remote_dir / "b.txt").write_text("content b")
+
+        inputs = iter(["s", "2"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        # WHEN
+        placed = _place_new_remote_files(
+            ["a.txt", "b.txt"], remote_dir, "dev-server", auto_yes=False
+        )
+
+        # THEN — a.txt skipped, b.txt placed
+        assert "a.txt" not in placed
+        assert "b.txt" in placed

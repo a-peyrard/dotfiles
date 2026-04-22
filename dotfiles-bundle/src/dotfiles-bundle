@@ -2079,6 +2079,32 @@ def _place_new_file(
     return False
 
 
+def _place_new_remote_files(
+    new_remote_files: list[str],
+    remote_dir: Path,
+    bundle_name: str,
+    auto_yes: bool,
+) -> dict[str, str]:
+    """Place new remote files interactively. Returns {deployed_path: placement}."""
+    placed = {}
+    if not new_remote_files:
+        return placed
+    if auto_yes:
+        print(f"\n{Color.YELLOW}Skipping {len(new_remote_files)} new file(s) — interactive placement required, run without -y{Color.RESET}")
+        return placed
+    print(f"\nPlacing {len(new_remote_files)} new file(s):")
+    for fp in new_remote_files:
+        remote_file = remote_dir / fp
+        content = remote_file.read_bytes()
+        mode = remote_file.stat().st_mode
+        placement = _prompt_new_file_placement(fp, bundle_name)
+        if placement == "skip":
+            continue
+        if _place_new_file(fp, content, placement, bundle_name, mode=mode):
+            placed[fp] = placement
+    return placed
+
+
 def _classify_pullable(changed_files, conflict_files, provenance, manifest_files):
     """Determine which changed files can be auto-applied during pull.
 
@@ -2549,7 +2575,6 @@ def cmd_pull(args):
         # --- Apply changed files ---
         applied = 0
         pull_applied = {}   # {deployed_path: source_path}
-        pull_placed = {}    # {deployed_path: placement}
         if changed_files:
             if cannot_apply:
                 print(f"\n{Color.YELLOW}Skipping {len(cannot_apply)} composite file(s) (manual apply only):{Color.RESET}")
@@ -2578,29 +2603,14 @@ def cmd_pull(args):
                 applied, pull_applied = _apply_pull_files(can_apply, provenance, remote_dir, local_dir, manifest_files)
 
         # --- Place new files ---
-        placed = 0
-        if new_remote_files:
-            if args.yes:
-                print(f"\n{Color.YELLOW}Skipping {len(new_remote_files)} new file(s) — interactive placement required, run without -y{Color.RESET}")
-            else:
-                print(f"\nPlacing {len(new_remote_files)} new file(s):")
-                for fp in new_remote_files:
-                    remote_file = remote_dir / fp
-                    content = remote_file.read_bytes()
-                    mode = remote_file.stat().st_mode
-                    placement = _prompt_new_file_placement(fp, bundle_name)
-                    if placement == "skip":
-                        continue
-                    if _place_new_file(fp, content, placement, bundle_name, mode=mode):
-                        placed += 1
-                        pull_placed[fp] = placement
+        pull_placed = _place_new_remote_files(new_remote_files, remote_dir, bundle_name, args.yes)
 
         # Summary
         parts = []
         if applied:
             parts.append(f"{applied} changed file(s) applied")
-        if placed:
-            parts.append(f"{placed} new file(s) placed")
+        if pull_placed:
+            parts.append(f"{len(pull_placed)} new file(s) placed")
         if cannot_apply:
             parts.append(f"{len(cannot_apply)} composite file(s) skipped")
         if parts:
@@ -2878,6 +2888,8 @@ def cmd_sync(args):
             prompt_parts = []
             if pull_count:
                 prompt_parts.append(f"pull {pull_count}")
+            if new_remote_files:
+                prompt_parts.append(f"place {len(new_remote_files)} new")
             if deploy_count:
                 prompt_parts.append(f"deploy {deploy_count}")
             prompt = " and ".join(prompt_parts) + " file(s)"
@@ -2893,8 +2905,11 @@ def cmd_sync(args):
             print(f"\nPulling {pull_count} file(s)...")
             _, pull_applied = _apply_pull_files(can_pull, provenance, remote_dir, local_dir, manifest_files)
 
+        # --- Phase 1b: Place new remote files ---
+        pull_placed = _place_new_remote_files(new_remote_files, remote_dir, bundle_name, args.yes)
+
         # --- Phase 2: Rebuild package after pull ---
-        if pull_applied:
+        if pull_applied or pull_placed:
             rebuild_dir = Path(temp_dir) / "rebuild"
             rebuild_dir.mkdir()
             rebuild_builder = PackageBuilder(bundle_name, config)
@@ -2933,13 +2948,15 @@ def cmd_sync(args):
         new_manifest = build_manifest(bundle_name, files, builder.override_manager, package_dir)
         write_manifest(bundle_name, new_manifest)
 
-        if pull_applied:
-            write_pull_manifest(bundle_name, pull_applied, {})
+        if pull_applied or pull_placed:
+            write_pull_manifest(bundle_name, pull_applied, pull_placed)
 
         # --- Summary ---
         parts = []
         if pull_applied:
             parts.append(f"{len(pull_applied)} pulled")
+        if pull_placed:
+            parts.append(f"{len(pull_placed)} new file(s) placed")
         if deployed_count:
             parts.append(f"{deployed_count} deployed")
         if conflict_files:
