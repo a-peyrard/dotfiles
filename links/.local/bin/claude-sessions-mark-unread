@@ -7,7 +7,10 @@
 CACHE_DIR="$HOME/.cache/claude-sessions"
 UNREAD_FILE="$CACHE_DIR/unread.json"
 PROTECTED_FILE="$CACHE_DIR/unread-protected.json"
+LOG_FILE="$CACHE_DIR/unread.log"
 mkdir -p "$CACHE_DIR"
+
+log() { echo "$(date +%H:%M:%S) $1" >> "$LOG_FILE"; }
 
 target=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}')
 
@@ -20,10 +23,14 @@ if echo "$current" | jq -e --arg t "$target" 'index($t) != null' >/dev/null 2>&1
     # Already unread — remove from both
     echo "$current" | jq --arg t "$target" '[.[] | select(. != $t)]' > "$UNREAD_FILE"
     echo "$protected" | jq --arg t "$target" '[.[] | select(. != $t)]' > "$PROTECTED_FILE"
+    log "TOGGLE UNREAD- $target (manual mark-read)"
+    log "TOGGLE PROTECT- $target (manual mark-read)"
     tmux display-message "Marked as read: $target"
 else
     # Add to unread + protect from auto-clear
     echo "$current" | jq --arg t "$target" '. + [$t]' > "$UNREAD_FILE"
     echo "$protected" | jq --arg t "$target" 'if index($t) then . else . + [$t] end' > "$PROTECTED_FILE"
+    log "TOGGLE UNREAD+ $target (manual mark-unread)"
+    log "TOGGLE PROTECT+ $target (manual mark-unread)"
     tmux display-message "Marked as unread: $target"
 fi
