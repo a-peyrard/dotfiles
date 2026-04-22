@@ -34,13 +34,18 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
 
 STATE_BASE_DIR = Path.home() / ".claude-sessions" / "state"
 CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
 UNREAD_FILE = CACHE_DIR / "unread.json"
+UNREAD_PROTECTED_FILE = CACHE_DIR / "unread-protected.json"
+UNREAD_DWELL_FILE = CACHE_DIR / "unread-dwell.json"
 PREV_STATE_FILE = CACHE_DIR / "statusbar-prev.json"
+
+DWELL_SECONDS = 1.5
 
 GREEN = "#88c088"
 ORANGE = "#d4a060"
@@ -241,11 +246,13 @@ def main():
             if pane_id not in pane_latest or mtime > pane_latest[pane_id][1]:
                 pane_latest[pane_id] = (state, mtime)
 
-    # Load previous states and unread set
+    # Load previous states, unread set, and manual-unread protection
     prev_states = load_json(PREV_STATE_FILE) or {}
     unread_targets = set(load_json(UNREAD_FILE) or [])
+    protected_targets = set(load_json(UNREAD_PROTECTED_FILE) or [])
     new_prev_states = {}
     unread_changed = False
+    protected_changed = False
 
     # Classify each agent and detect transitions
     agents = {}
@@ -265,13 +272,34 @@ def main():
             unread_targets.add(target)
             unread_changed = True
 
-    # Auto-read: sessions in the active window get marked as read
+    # Auto-read with dwell: only mark read after viewing for DWELL_SECONDS.
+    # Skip protected targets until user leaves the window.
+    now = time.time()
+    dwell = load_json(UNREAD_DWELL_FILE) or {}  # target → timestamp when first seen active
+    dwell_changed = False
+
     for pane_id in agents:
+        target = pane_to_target.get(pane_id, pane_id)
         if pane_to_window.get(pane_id) == active_window:
-            target = pane_to_target.get(pane_id, pane_id)
-            if target in unread_targets:
-                unread_targets.discard(target)
-                unread_changed = True
+            if target in unread_targets and target not in protected_targets:
+                if target not in dwell:
+                    # Start dwell timer
+                    dwell[target] = now
+                    dwell_changed = True
+                elif now - dwell[target] >= DWELL_SECONDS:
+                    # Dwell time met — mark as read
+                    unread_targets.discard(target)
+                    unread_changed = True
+                    del dwell[target]
+                    dwell_changed = True
+        else:
+            # User left this window — clear dwell timer and protection
+            if target in dwell:
+                del dwell[target]
+                dwell_changed = True
+            if target in protected_targets:
+                protected_targets.discard(target)
+                protected_changed = True
 
     # Clean stale targets
     current_targets = {pane_to_target.get(pid, pid) for pid in agents}
@@ -284,6 +312,10 @@ def main():
     save_json(PREV_STATE_FILE, new_prev_states)
     if unread_changed:
         save_json(UNREAD_FILE, list(unread_targets))
+    if protected_changed:
+        save_json(UNREAD_PROTECTED_FILE, list(protected_targets))
+    if dwell_changed:
+        save_json(UNREAD_DWELL_FILE, dwell)
 
     # Build per-window display state
     window_agents = defaultdict(list)
