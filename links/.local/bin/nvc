@@ -9,7 +9,7 @@
 #   nvc --diff <file>                           Show proposed changes (stdin) as diff
 #   nvc --clear                                 Clear all highlights
 #   nvc --close-diff                            Close diff view
-#   nvc review [D12345|hash|.]                   Review a diff/commit/rev in diffview
+#   nvc [--full-screen] review [D12345|hash|.]  Review a diff/commit/rev in diffview
 #   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
 #   nvc expr '<vimscript-expr>'                 Evaluate expression, return result
 #   nvc errors                                  Get recent errors (noice-aware)
@@ -22,8 +22,17 @@
 #   nvc --highlight-function f.py:43 --highlight-lines f.py:99-114,160-171
 #
 # All commands auto-spawn nvim in a tmux pane if none is running.
+#
+#   --full-screen    Run nvim in the current pane (no split). For use in
+#                    dedicated tmux windows (devbridge handlers, standalone review).
 
 set -euo pipefail
+
+FULL_SCREEN=false
+if [[ "${1:-}" == "--full-screen" ]]; then
+    FULL_SCREEN=true
+    shift
+fi
 
 # Scope socket per tmux window — use TMUX_PANE to resolve the correct window
 # even when this pane is not focused (tmux display-message without -t returns
@@ -34,6 +43,15 @@ SOCK="/tmp/nvim-claude-${USER}-${WINDOW_ID}.sock"
 # ============================================================================
 # Low-level helpers
 # ============================================================================
+
+spawn_nvim() {
+    local cmd="$1"
+    if $FULL_SCREEN; then
+        exec bash -c "$cmd"
+    else
+        tmux split-window -t "${TMUX_PANE}" -h -l 50% "$cmd"
+    fi
+}
 
 find_nvim_pane() {
     tmux list-panes -t "$WINDOW_ID" -F '#{pane_id} #{pane_current_command}' 2>/dev/null \
@@ -78,7 +96,7 @@ ensure_nvim_running() {
     fi
 
     # Spawn fresh nvim
-    tmux split-window -t "${TMUX_PANE}" -h -l 50% "nvim --listen $SOCK"
+    spawn_nvim "nvim --listen $SOCK"
     echo "Spawned nvim in new pane" >&2
     if ! wait_for_socket; then
         echo "Error: timed out waiting for nvim socket" >&2
@@ -296,10 +314,10 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
                 REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
             fi
             if [ -n "$DIFF_ID" ]; then
-                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
+                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
                 echo "Reviewing ${DIFF_ID}" >&2
             else
-                tmux split-window -t "${TMUX_PANE}" -h -l 50% "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
+                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
                 echo "Opening review picker" >&2
             fi
         fi
@@ -437,10 +455,16 @@ LUAEOF
 
 open_in_nvim() {
     local file="$1" line="$2"
-    ensure_nvim_running
-    local nvim_cmd
-    [ -n "$line" ] && nvim_cmd=":e +${line} ${file}" || nvim_cmd=":e ${file}"
-    nvim --server "$SOCK" --remote-send "<Esc>${nvim_cmd}<CR>"
+    if $FULL_SCREEN && ! socket_alive; then
+        local nvim_args="--listen $SOCK"
+        [ -n "$line" ] && nvim_args="$nvim_args +${line}"
+        spawn_nvim "nvim $nvim_args ${file}"
+    else
+        ensure_nvim_running
+        local nvim_cmd
+        [ -n "$line" ] && nvim_cmd=":e +${line} ${file}" || nvim_cmd=":e ${file}"
+        nvim --server "$SOCK" --remote-send "<Esc>${nvim_cmd}<CR>"
+    fi
     echo "Opened ${file}${line:+:$line}" >&2
 }
 
