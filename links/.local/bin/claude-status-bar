@@ -46,6 +46,20 @@ UNREAD_DWELL_FILE = CACHE_DIR / "unread-dwell.json"
 PREV_STATE_FILE = CACHE_DIR / "statusbar-prev.json"
 
 DWELL_SECONDS = 1.5
+LOG_FILE = CACHE_DIR / "unread.log"
+
+
+def _log(msg: str) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+        # Rotate: keep last 200 lines
+        lines = LOG_FILE.read_text().splitlines()
+        if len(lines) > 200:
+            LOG_FILE.write_text("\n".join(lines[-200:]) + "\n")
+    except OSError:
+        pass
 
 GREEN = "#88c088"
 ORANGE = "#d4a060"
@@ -267,10 +281,16 @@ def main():
         target = pane_to_target.get(pane_id, pane_id)
         new_prev_states[target] = classification
 
+        # Log agent state transitions
+        prev = prev_states.get(target)
+        if prev and prev != classification:
+            _log(f"STATE {target} {prev}→{classification}")
+
         # WORKING → IDLE transition = unread
-        if prev_states.get(target) == "working" and classification == "idle":
+        if prev == "working" and classification == "idle":
             unread_targets.add(target)
             unread_changed = True
+            _log(f"UNREAD+ {target} (working→idle transition)")
 
     # Auto-read with dwell: only mark read after viewing for DWELL_SECONDS.
     # Skip protected targets until user leaves the window.
@@ -287,14 +307,17 @@ def main():
                     if target not in dwell:
                         dwell[target] = now
                         dwell_changed = True
+                        _log(f"DWELL+ {target} (viewing protected, active_win={active_window})")
                 elif target not in dwell:
                     dwell[target] = now
                     dwell_changed = True
+                    _log(f"DWELL+ {target} (started, active_win={active_window})")
                 elif now - dwell[target] >= DWELL_SECONDS:
                     unread_targets.discard(target)
                     unread_changed = True
                     del dwell[target]
                     dwell_changed = True
+                    _log(f"UNREAD- {target} (dwell {DWELL_SECONDS}s met, auto-read)")
         else:
             # User left this window
             if target in dwell:
@@ -302,8 +325,10 @@ def main():
                 if target in protected_targets:
                     protected_targets.discard(target)
                     protected_changed = True
+                    _log(f"PROTECT- {target} (user left window)")
                 del dwell[target]
                 dwell_changed = True
+                _log(f"DWELL- {target} (user left window)")
 
     # Clean stale targets
     current_targets = {pane_to_target.get(pid, pid) for pid in agents}
@@ -311,6 +336,7 @@ def main():
     if stale:
         unread_targets -= stale
         unread_changed = True
+        _log(f"UNREAD- {stale} (stale targets, not in current agents)")
 
     # Persist
     save_json(PREV_STATE_FILE, new_prev_states)

@@ -390,6 +390,20 @@ def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) ->
 _CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
 
 _UNREAD_FILE = _CACHE_DIR / "unread.json"
+_UNREAD_PROTECTED_FILE = _CACHE_DIR / "unread-protected.json"
+_LOG_FILE = _CACHE_DIR / "unread.log"
+_LOG_ENABLED = True
+
+
+def _log(msg: str) -> None:
+    if not _LOG_ENABLED:
+        return
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_LOG_FILE, "a") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S')} TUI: {msg}\n")
+    except OSError:
+        pass
 
 
 def _load_unread() -> set[str]:
@@ -402,6 +416,13 @@ def _load_unread() -> set[str]:
 def _save_unread(targets: set[str]) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _UNREAD_FILE.write_text(json.dumps(list(targets)))
+
+
+def _load_protected() -> set[str]:
+    try:
+        return set(json.loads(_UNREAD_PROTECTED_FILE.read_text()))
+    except (json.JSONDecodeError, OSError):
+        return set()
 
 
 _THEME_FILE = _CACHE_DIR / "theme.json"
@@ -789,6 +810,9 @@ class SessionTracker(App[None]):
         self._sessions = sessions
         self._session_map = {s.target: s for s in sessions}
 
+        # Sync unread from disk (pick up external changes from toggle script)
+        self._unread_targets = _load_unread()
+
         # Detect WORKING → IDLE transitions → mark unread
         unread_changed = False
         for s in sessions:
@@ -796,6 +820,7 @@ class SessionTracker(App[None]):
             if prev_status == Status.WORKING and s.status == Status.IDLE:
                 self._unread_targets.add(s.target)
                 unread_changed = True
+                _log(f"UNREAD+ {s.target} (working→idle transition)")
             self._prev_statuses[s.target] = s.status
 
         # Check tmux pane focus — if user is directly viewing a pane, mark it read
@@ -803,8 +828,10 @@ class SessionTracker(App[None]):
 
         # Clean up stale targets
         current_targets = {s.target for s in sessions}
-        if self._unread_targets - current_targets:
+        stale = self._unread_targets - current_targets
+        if stale:
             unread_changed = True
+            _log(f"UNREAD- {stale} (stale targets)")
         self._unread_targets &= current_targets
         self._prev_statuses = {t: st for t, st in self._prev_statuses.items() if t in current_targets}
         if unread_changed:
@@ -878,11 +905,14 @@ class SessionTracker(App[None]):
             if len(parts) == 2 and parts[1] == "1":
                 active_panes.add(parts[0])
 
+        protected = _load_protected()
         changed = False
         for s in sessions:
             if s.target in active_panes and s.target in self._unread_targets:
-                self._unread_targets.discard(s.target)
-                changed = True
+                if s.target not in protected:
+                    self._unread_targets.discard(s.target)
+                    changed = True
+                    _log(f"UNREAD- {s.target} (pane focus, active window)")
         if changed:
             _save_unread(self._unread_targets)
 
@@ -936,6 +966,7 @@ class SessionTracker(App[None]):
         elapsed = datetime.now(timezone.utc).timestamp() - self._read_pending_since
         if elapsed >= 1.5:
             self._unread_targets.discard(target)
+            _log(f"UNREAD- {target} (dwell 1.5s met in sidebar)")
             _save_unread(self._unread_targets)
             self._refresh_card(target)
 
@@ -1071,8 +1102,10 @@ class SessionTracker(App[None]):
         if target in self._unread_targets:
             self._unread_targets.discard(target)
             self._manual_unread_target = None
+            _log(f"UNREAD- {target} (manual toggle in TUI)")
         else:
             self._unread_targets.add(target)
+            _log(f"UNREAD+ {target} (manual toggle in TUI)")
             self._manual_unread_target = target
         _save_unread(self._unread_targets)
         self._refresh_card(target)
