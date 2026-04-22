@@ -39,6 +39,8 @@ return {
       { "<leader>cl", "<cmd>Trouble lsp toggle focus=false win.position=right<cr>", desc = "LSP Definitions / references / ..." },
       { "<leader>xL", "<cmd>Trouble loclist toggle<cr>", desc = "Location List" },
       { "<leader>xQ", "<cmd>Trouble qflist toggle<cr>", desc = "Quickfix List" },
+      { "<leader>ci", "<cmd>Trouble lsp_incoming_calls focus=true<cr>", desc = "Incoming calls (tree)" },
+      { "<leader>co", "<cmd>Trouble lsp_outgoing_calls focus=true<cr>", desc = "Outgoing calls (tree)" },
     },
     config = function()
       require("trouble").setup({})
