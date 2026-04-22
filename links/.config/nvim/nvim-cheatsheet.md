@@ -169,8 +169,8 @@ Examples:
 ### Call Hierarchy
 | Keybinding | Action |
 |------------|--------|
-| `<leader>ci` | Incoming calls (who calls this function) |
-| `<leader>co` | Outgoing calls (what this function calls) |
+| `<leader>ci` | Incoming calls (recursive tree via Trouble) |
+| `<leader>co` | Outgoing calls (recursive tree via Trouble) |
 
 ### Diagnostic Navigation & Viewing
 | Keybinding | Action |
