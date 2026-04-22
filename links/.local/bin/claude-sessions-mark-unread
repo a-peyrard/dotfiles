@@ -1,0 +1,29 @@
+#!/bin/bash
+# Toggle unread flag for the current tmux pane's Claude session.
+# Reuses the TUI's unread.json so both stay in sync.
+# Also writes unread-protected.json so pane-focus detection won't
+# auto-clear until the user has left the window.
+
+CACHE_DIR="$HOME/.cache/claude-sessions"
+UNREAD_FILE="$CACHE_DIR/unread.json"
+PROTECTED_FILE="$CACHE_DIR/unread-protected.json"
+mkdir -p "$CACHE_DIR"
+
+target=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}')
+
+read_json() { [ -f "$1" ] && cat "$1" || echo "[]"; }
+
+current=$(read_json "$UNREAD_FILE")
+protected=$(read_json "$PROTECTED_FILE")
+
+if echo "$current" | jq -e --arg t "$target" 'index($t) != null' >/dev/null 2>&1; then
+    # Already unread — remove from both
+    echo "$current" | jq --arg t "$target" '[.[] | select(. != $t)]' > "$UNREAD_FILE"
+    echo "$protected" | jq --arg t "$target" '[.[] | select(. != $t)]' > "$PROTECTED_FILE"
+    tmux display-message "Marked as read: $target"
+else
+    # Add to unread + protect from auto-clear
+    echo "$current" | jq --arg t "$target" '. + [$t]' > "$UNREAD_FILE"
+    echo "$protected" | jq --arg t "$target" 'if index($t) then . else . + [$t] end' > "$PROTECTED_FILE"
+    tmux display-message "Marked as unread: $target"
+fi
