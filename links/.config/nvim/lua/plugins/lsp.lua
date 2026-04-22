@@ -48,9 +48,9 @@ return {
         vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, opts)
         vim.keymap.set('n', 'gr', vim.lsp.buf.references, opts)
 
-        -- Call hierarchy
-        vim.keymap.set('n', '<leader>ci', vim.lsp.buf.incoming_calls, opts)
-        vim.keymap.set('n', '<leader>co', vim.lsp.buf.outgoing_calls, opts)
+        -- Call hierarchy (Trouble tree view)
+        vim.keymap.set('n', '<leader>ci', '<cmd>Trouble lsp_incoming_calls focus=true<cr>', vim.tbl_extend("force", opts, { desc = "Incoming calls (tree)" }))
+        vim.keymap.set('n', '<leader>co', '<cmd>Trouble lsp_outgoing_calls focus=true<cr>', vim.tbl_extend("force", opts, { desc = "Outgoing calls (tree)" }))
 
         -- Diagnostic navigation (Neovim 0.10+ API)
         vim.keymap.set('n', ']d', function() vim.diagnostic.jump({ count = 1, float = true }) end, opts)
