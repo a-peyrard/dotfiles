@@ -281,25 +281,29 @@ def main():
     for pane_id in agents:
         target = pane_to_target.get(pane_id, pane_id)
         if pane_to_window.get(pane_id) == active_window:
-            if target in unread_targets and target not in protected_targets:
-                if target not in dwell:
-                    # Start dwell timer
+            if target in unread_targets:
+                if target in protected_targets:
+                    # Track that user is viewing a protected target
+                    if target not in dwell:
+                        dwell[target] = now
+                        dwell_changed = True
+                elif target not in dwell:
                     dwell[target] = now
                     dwell_changed = True
                 elif now - dwell[target] >= DWELL_SECONDS:
-                    # Dwell time met — mark as read
                     unread_targets.discard(target)
                     unread_changed = True
                     del dwell[target]
                     dwell_changed = True
         else:
-            # User left this window — clear dwell timer and protection
+            # User left this window
             if target in dwell:
+                # Was viewing → left: clear protection (next visit will auto-read)
+                if target in protected_targets:
+                    protected_targets.discard(target)
+                    protected_changed = True
                 del dwell[target]
                 dwell_changed = True
-            if target in protected_targets:
-                protected_targets.discard(target)
-                protected_changed = True
 
     # Clean stale targets
     current_targets = {pane_to_target.get(pid, pid) for pid in agents}
