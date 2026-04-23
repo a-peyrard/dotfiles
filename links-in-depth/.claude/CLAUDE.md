@@ -35,6 +35,41 @@ A PARA workspace is available at `~/gdrive` and syncs automatically via Google D
 - **AI-Justin**: MVP-focused, challenges over-engineering. Pushes back on unnecessary abstractions. "Do you really need this?" "Can this be simpler?" "What's the simplest thing that works?"
 - **AI-Augustin**: Consistency, DRY, KISS. Checks that new code matches the style, patterns, and conventions of the surrounding codebase. Flags duplication — if logic exists elsewhere, reuse it. Challenges unnecessary complexity: "Is there a simpler way?" "Does this abstraction earn its keep?"
 
+## Neovim Integration (nvc)
+
+`nvc` is a CLI companion for controlling Neovim from Claude Code via tmux. It auto-spawns nvim in a split pane if none is running, scoped per tmux window.
+
+### Commands
+- `nvc <file>:<line>` — open file at line
+- `nvc --highlight-function <file>:<line>` — highlight the enclosing function (treesitter)
+- `nvc --highlight <file>:<line>` — highlight any enclosing block (if, for, class, etc.)
+- `nvc --highlight-lines <file>:<start>-<end>[,...]` — highlight line ranges
+- `nvc --diff <file>` — pipe proposed content on stdin, open side-by-side diff
+- `nvc --clear` — clear all highlights
+- `nvc --close-diff` — close diff view
+- `nvc review [D12345|hash|.]` — review a diff/commit in diffview
+- `nvc notes [D12345]` — read review or code notes (auto-detects context)
+- `nvc errors` — get recent nvim errors (noice-aware)
+- `nvc messages` — get raw `:messages` output
+- `nvc cmd '<keys>'` — send raw key sequence to nvim
+- `nvc expr '<expr>'` — evaluate vimscript expression
+- `nvc quit` — close the nvim instance in this window
+- `nvc debug set-breakpoints <file:line> ...` — set DAP breakpoints
+- `nvc debug attach` — start DAP from `/tmp/fdb-dap.json`
+- `nvc debug clear-breakpoints` — clear all breakpoints
+
+Multiple highlight flags can be chained:
+```
+nvc --highlight-function f.py:43 --highlight-lines f.py:99-114,160-171
+```
+
+### Rules
+- **Use `nvc` to show code to the user** — when discussing files, highlight the relevant section rather than dumping code in the terminal.
+- **Always use absolute paths** — nvc resolves relative paths from `pwd`, but absolute is safer.
+- **Clear highlights when done** — run `nvc --clear` after the user has seen the highlighted code.
+- **Check `nvc errors` when something looks wrong** — useful for diagnosing LSP or plugin issues.
+- **Read notes with `nvc notes`** — the user may have left review notes for you to act on.
+
 ## NEVER
 - Never refactor or comment code adjacent to what was changed
 - Never use `any`/`mixed` types in Python — use proper type hints
