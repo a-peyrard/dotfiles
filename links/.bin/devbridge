@@ -2,8 +2,8 @@
 """devbridge — bidirectional command bridge between Mac and devserver.
 
 A TCP message bus that dispatches JSON commands to handler scripts.
-Two instances run simultaneously (Mac on port 9998, devserver on port 9999),
-connected via ET tunnels.
+Two instances run simultaneously (Mac on DEVBRIDGE_MAC_PORT, devserver on
+DEVBRIDGE_SERVER_PORT), connected via ET tunnels.
 
 Usage:
     devbridge server                              Start the listener
@@ -33,16 +33,16 @@ HANDLERS_DIR = Path.home() / ".config" / "devbridge" / "handlers"
 LOG_FILE = "/tmp/devbridge.log"
 
 IS_MAC = platform.system() == "Darwin"
-DEFAULT_LISTEN_PORT = 9998 if IS_MAC else 9999
-DEFAULT_SEND_PORT = 9999 if IS_MAC else 9998
+_SERVER_PORT = int(os.environ.get("DEVBRIDGE_SERVER_PORT", 19999))
+_MAC_PORT = int(os.environ.get("DEVBRIDGE_MAC_PORT", 19998))
+DEFAULT_LISTEN_PORT = _MAC_PORT if IS_MAC else _SERVER_PORT
+DEFAULT_SEND_PORT = _SERVER_PORT if IS_MAC else _MAC_PORT
 
 
 # --- Logging ---
 
 def setup_logging(to_file: bool = False):
-    handlers = [logging.StreamHandler()]
-    if to_file:
-        handlers.append(logging.FileHandler(LOG_FILE))
+    handlers = [logging.FileHandler(LOG_FILE)] if to_file else [logging.StreamHandler()]
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(message)s",
@@ -69,7 +69,12 @@ def recv_msg(sock: socket.socket) -> dict | None:
         return None
     length = struct.unpack(">I", header)[0]
     if length > MAX_PAYLOAD:
-        raise ValueError(f"Payload too large: {length} bytes")
+        peek = header + (sock.recv(28, socket.MSG_PEEK) or b"")
+        ascii_preview = peek.decode("ascii", errors="replace")[:32]
+        raise ValueError(
+            f"Payload too large: {length} bytes — "
+            f"raw: {peek.hex(' ')} ({ascii_preview!r})"
+        )
     payload = _recv_exact(sock, length)
     if not payload:
         return None
@@ -101,32 +106,33 @@ def cmd_server(args):
 
     while True:
         conn, addr = sock.accept()
+        peer = f"{addr[0]}:{addr[1]}"
         try:
             msg = recv_msg(conn)
             if not msg:
-                log.warning("Empty message received")
+                log.warning(f"[{peer}] Empty message received")
                 continue
 
             cmd = msg.get("cmd", "")
             cmd_args = msg.get("args", {})
 
             if not CMD_PATTERN.match(cmd):
-                log.warning(f"Invalid command name: {cmd!r}")
+                log.warning(f"[{peer}] Invalid command name: {cmd!r}")
                 send_msg(conn, {"ok": False, "error": f"Invalid command: {cmd!r}"})
                 continue
 
-            log.info(f"Received: {cmd} {_summarize_args(cmd_args)}")
+            log.info(f"[{peer}] Received: {cmd} {_summarize_args(cmd_args)}")
             exit_code, stdout, stderr = dispatch(cmd, cmd_args)
 
             if exit_code == 0:
                 send_msg(conn, {"ok": True, "output": stdout})
-                log.info(f"OK: {cmd}")
+                log.info(f"[{peer}] OK: {cmd}")
             else:
                 send_msg(conn, {"ok": False, "error": stderr, "output": stdout})
-                log.error(f"FAILED: {cmd} (exit {exit_code}): {stderr}")
+                log.error(f"[{peer}] FAILED: {cmd} (exit {exit_code}): {stderr}")
 
         except Exception as e:
-            log.error(f"Error handling connection: {e}")
+            log.error(f"[{peer}] Error handling connection: {e}")
             try:
                 send_msg(conn, {"ok": False, "error": str(e)})
             except Exception:
