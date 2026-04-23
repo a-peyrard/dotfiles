@@ -390,7 +390,6 @@ def discover_sessions(self_pane: str, prev: dict[str, Session] | None = None) ->
 _CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
 
 _UNREAD_FILE = _CACHE_DIR / "unread.json"
-_UNREAD_PROTECTED_FILE = _CACHE_DIR / "unread-protected.json"
 _LOG_FILE = _CACHE_DIR / "unread.log"
 _LOG_ENABLED = True
 
@@ -417,12 +416,6 @@ def _save_unread(targets: set[str]) -> None:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _UNREAD_FILE.write_text(json.dumps(list(targets)))
 
-
-def _load_protected() -> set[str]:
-    try:
-        return set(json.loads(_UNREAD_PROTECTED_FILE.read_text()))
-    except (json.JSONDecodeError, OSError):
-        return set()
 
 
 _THEME_FILE = _CACHE_DIR / "theme.json"
@@ -674,7 +667,6 @@ class SessionTracker(App[None]):
         self._stop = threading.Event()
         # Unread tracking (persisted to disk)
         self._unread_targets: set[str] = _load_unread()
-        self._prev_statuses: dict[str, Status] = {}  # target → last known status
         self._manual_unread_target: str | None = None  # prevents dwell from clearing
         self._read_pending_target: str | None = None
         self._read_pending_since: float = 0.0
@@ -810,32 +802,9 @@ class SessionTracker(App[None]):
         self._sessions = sessions
         self._session_map = {s.target: s for s in sessions}
 
-        # Sync unread from disk (pick up external changes from toggle script)
+        # Reload unread from disk — status-bar is the single writer for additions,
+        # TUI is read-only except for removals (sidebar dwell, manual toggle)
         self._unread_targets = _load_unread()
-
-        # Detect WORKING → IDLE transitions → mark unread
-        unread_changed = False
-        for s in sessions:
-            prev_status = self._prev_statuses.get(s.target)
-            if prev_status == Status.WORKING and s.status == Status.IDLE:
-                self._unread_targets.add(s.target)
-                unread_changed = True
-                _log(f"UNREAD+ {s.target} (working→idle transition)")
-            self._prev_statuses[s.target] = s.status
-
-        # Check tmux pane focus — if user is directly viewing a pane, mark it read
-        self._check_pane_focus(sessions)
-
-        # Clean up stale targets
-        current_targets = {s.target for s in sessions}
-        stale = self._unread_targets - current_targets
-        if stale:
-            unread_changed = True
-            _log(f"UNREAD- {stale} (stale targets)")
-        self._unread_targets &= current_targets
-        self._prev_statuses = {t: st for t, st in self._prev_statuses.items() if t in current_targets}
-        if unread_changed:
-            _save_unread(self._unread_targets)
 
         lv = self.query_one("#session-list", ListView)
 
@@ -884,38 +853,6 @@ class SessionTracker(App[None]):
         self._update_title_bar(len(sessions))
         self._tick_preview()
 
-    def _check_pane_focus(self, sessions: list[Session]) -> None:
-        """Check if the user is directly focused on any session's tmux pane."""
-        # Get client activity to detect idle (>2min = not watching)
-        client_activity = _run(["tmux", "list-clients", "-F", "#{client_activity}"])
-        if not client_activity.strip():
-            return  # no clients attached
-        try:
-            latest = max(int(ts) for ts in client_activity.strip().splitlines() if ts.strip())
-            if datetime.now(timezone.utc).timestamp() - latest > 120:
-                return  # client idle
-        except (ValueError, TypeError):
-            return
-
-        # Check which panes have their window active
-        pane_active = _run(["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}\t#{window_active}"])
-        active_panes: set[str] = set()
-        for line in pane_active.strip().splitlines():
-            parts = line.split("\t", 1)
-            if len(parts) == 2 and parts[1] == "1":
-                active_panes.add(parts[0])
-
-        protected = _load_protected()
-        changed = False
-        for s in sessions:
-            if s.target in active_panes and s.target in self._unread_targets:
-                if s.target not in protected:
-                    self._unread_targets.discard(s.target)
-                    changed = True
-                    _log(f"UNREAD- {s.target} (pane focus, active window)")
-        if changed:
-            _save_unread(self._unread_targets)
-
     def _get_selected_session(self) -> Session | None:
         lv = self.query_one("#session-list", ListView)
         child = lv.highlighted_child
@@ -947,23 +884,36 @@ class SessionTracker(App[None]):
         preview.update_live("\n".join(lines))
 
     def _tick_dwell(self) -> None:
-        """Check dwell time: mark session as read after ~1.5s of staying on it."""
+        """Check dwell time: mark session as read after ~1.5s of staying on it.
+        Only counts time when the TUI's own window is active (someone is looking)."""
+        # Check if the TUI window is actually visible
+        tui_visible = _run(["tmux", "display-message", "-t", self._self_pane, "-p", "#{window_active}"]).strip() == "1"
+        if not tui_visible:
+            # Nobody looking — reset dwell so it starts fresh when they return
+            self._read_pending_since = 0.0
+            return
+
         session = self._get_selected_session()
         if not session:
             return
         target = session.target
+        now = datetime.now(timezone.utc).timestamp()
         if target != self._read_pending_target:
             # Selection changed — reset dwell timer, clear manual unread protection
             if self._manual_unread_target and self._manual_unread_target != target:
                 self._manual_unread_target = None
             self._read_pending_target = target
-            self._read_pending_since = datetime.now(timezone.utc).timestamp()
+            self._read_pending_since = now
+            return
+        if self._read_pending_since == 0.0:
+            # TUI just became visible — start fresh
+            self._read_pending_since = now
             return
         if self._manual_unread_target == target:
             return  # manual unread — don't auto-clear
         if target not in self._unread_targets:
             return  # already read
-        elapsed = datetime.now(timezone.utc).timestamp() - self._read_pending_since
+        elapsed = now - self._read_pending_since
         if elapsed >= 1.5:
             self._unread_targets.discard(target)
             _log(f"UNREAD- {target} (dwell 1.5s met in sidebar)")
