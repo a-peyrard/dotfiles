@@ -63,6 +63,16 @@ vim.opt.backup = false          -- Don't create backup files
 vim.opt.writebackup = false     -- Don't create backup before overwriting
 vim.opt.swapfile = false        -- Don't create swap files
 
+-- Auto-reload files changed externally (JetBrains-like behavior)
+vim.opt.autoread = true         -- Auto-reload when file changes on disk
+vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold" }, {
+  group = vim.api.nvim_create_augroup("AutoReload", { clear = true }),
+  callback = function()
+    vim.cmd("silent! checktime")
+  end,
+  desc = "Check for external file changes",
+})
+
 -- Mouse support (useful in tmux, even if you prefer keyboard)
 vim.opt.mouse = "a"             -- Enable mouse in all modes
 
