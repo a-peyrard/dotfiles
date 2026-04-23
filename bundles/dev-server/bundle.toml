@@ -115,4 +115,6 @@ ignore = [
     ".config/nvim/lazy-lock.json",
     # Runtime plugin READMEs (local git submodules, not on remote)
     "**/README.md",
+    # LLVM coverage artifact
+    "**/default.profraw",
 ]
