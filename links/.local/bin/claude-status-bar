@@ -49,11 +49,14 @@ DWELL_SECONDS = 1.5
 LOG_FILE = CACHE_DIR / "unread.log"
 
 
+_active_win_for_log = "?"
+
+
 def _log(msg: str) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a") as f:
-            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            f.write(f"{time.strftime('%H:%M:%S')} [win={_active_win_for_log}] {msg}\n")
         # Rotate: keep last 200 lines
         lines = LOG_FILE.read_text().splitlines()
         if len(lines) > 200:
@@ -229,7 +232,9 @@ def format_counters(counts):
 
 
 def main():
+    global _active_win_for_log
     session_name, tmux_pid, active_window, session_group = get_tmux_info()
+    _active_win_for_log = active_window
     if session_name is None or tmux_pid is None:
         return
 
