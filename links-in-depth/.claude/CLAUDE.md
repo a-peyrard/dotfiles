@@ -49,6 +49,8 @@ A PARA workspace is available at `~/gdrive` and syncs automatically via Google D
 - `nvc --close-diff` — close diff view
 - `nvc review [D12345|hash|.]` — review a diff/commit in diffview
 - `nvc notes [D12345]` — read review or code notes (auto-detects context)
+- `nvc notes remove <file>:<line>` — remove a specific note after addressing it
+- `nvc notes clear` — clear all notes
 - `nvc errors` — get recent nvim errors (noice-aware)
 - `nvc messages` — get raw `:messages` output
 - `nvc cmd '<keys>'` — send raw key sequence to nvim
@@ -69,6 +71,7 @@ nvc --highlight-function f.py:43 --highlight-lines f.py:99-114,160-171
 - **Clear highlights when done** — run `nvc --clear` after the user has seen the highlighted code.
 - **Check `nvc errors` when something looks wrong** — useful for diagnosing LSP or plugin issues.
 - **Read notes with `nvc notes`** — the user may have left review notes for you to act on.
+- **Notes workflow:** Read notes (`nvc notes`) → address each note → remove it (`nvc notes remove <file>:<line>`) → repeat until all addressed. Don't clear all at once unless the user asks.
 
 ## NEVER
 - Never refactor or comment code adjacent to what was changed
