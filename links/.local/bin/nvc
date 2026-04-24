@@ -230,8 +230,13 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
             fi
         fi
 
-        # Fall back to cwd-based code notes
-        CWD_KEY=$(pwd | sed 's|/|_|g; s|^_||')
+        # Fall back to cwd-based code notes (use nvim's cwd, not shell's)
+        if socket_alive; then
+            NVIM_CWD=$(nvim --server "$SOCK" --remote-expr 'getcwd()' 2>/dev/null || pwd)
+        else
+            NVIM_CWD=$(pwd)
+        fi
+        CWD_KEY=$(echo "$NVIM_CWD" | sed 's|/|_|g; s|^_||')
         NOTES_FILE="/tmp/nvc-notes-${CWD_KEY}.md"
         if [ -f "$NOTES_FILE" ] && [ -s "$NOTES_FILE" ]; then
             cat "$NOTES_FILE"
