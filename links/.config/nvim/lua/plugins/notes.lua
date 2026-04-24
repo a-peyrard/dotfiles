@@ -301,6 +301,35 @@ return {
     end
 
     -- ========================================================================
+    -- Remove note by file path and line (for nvc RPC)
+    -- ========================================================================
+
+    local function remove_note_by_location(file, line)
+      -- Find the note matching this file:line across all buffers
+      for key, note in pairs(notes_store) do
+        local kb, kl = key:match("^(%d+):(%d+)$")
+        if tonumber(kl) == line then
+          local buf_name = vim.api.nvim_buf_get_name(tonumber(kb))
+          if buf_name == file or buf_name:match(vim.pesc(file) .. "$") then
+            notes_store[key] = nil
+            refresh_diagnostics(tonumber(kb))
+            flush_notes_to_file()
+            vim.notify("Note removed: " .. note.location, vim.log.levels.INFO)
+            return true
+          end
+        end
+      end
+      vim.notify("No note found at " .. file .. ":" .. line, vim.log.levels.WARN)
+      return false
+    end
+
+    -- Export for RPC access (nvc notes clear / nvc notes remove)
+    _G.Notes = {
+      clear = clear_notes,
+      remove = remove_note_by_location,
+    }
+
+    -- ========================================================================
     -- Keybindings
     -- ========================================================================
 

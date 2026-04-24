@@ -205,11 +205,46 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         exit 0
         ;;
     notes)
-        # Read notes — review notes (by diff ID) or code notes (by cwd)
-        # Usage: nvc notes [D12345]  — review notes for a diff
-        #        nvc notes            — auto-detect: review context, then cwd-based
+        # Read, clear, or remove notes
+        # Usage: nvc notes              — read all notes (auto-detect scope)
+        #        nvc notes [D12345]     — read notes for a specific diff
+        #        nvc notes clear        — clear all notes
+        #        nvc notes remove <file>:<line> — remove a specific note
         shift
-        DIFF_ID="${1:-}"
+        SUBCMD="${1:-}"
+
+        # Handle subcommands first
+        if [ "$SUBCMD" = "clear" ]; then
+            if socket_alive; then
+                nvim --server "$SOCK" --remote-send '<Esc>:lua _G.Notes.clear()<CR>'
+                echo "Notes cleared" >&2
+            else
+                echo "No nvim instance running" >&2
+            fi
+            exit 0
+        fi
+
+        if [ "$SUBCMD" = "remove" ]; then
+            shift
+            LOCATION="${1:-}"
+            if [ -z "$LOCATION" ]; then
+                echo "Usage: nvc notes remove <file>:<line>" >&2
+                exit 1
+            fi
+            FILE="${LOCATION%:*}"
+            LINE="${LOCATION##*:}"
+            # Resolve to absolute path
+            [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+            if socket_alive; then
+                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.Notes.remove('${FILE}', ${LINE})<CR>"
+                echo "Removed note at ${LOCATION}" >&2
+            else
+                echo "No nvim instance running" >&2
+            fi
+            exit 0
+        fi
+
+        DIFF_ID="$SUBCMD"
         if [ -z "$DIFF_ID" ]; then
             # Try to get from nvim's review context
             if socket_alive; then
