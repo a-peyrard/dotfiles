@@ -12,7 +12,19 @@ mkdir -p "$CACHE_DIR"
 
 log() { echo "$(date +%H:%M:%S) $1" >> "$LOG_FILE"; }
 
-target=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}')
+# Use focused pane's target, but if no agent exists there, find one in the same window
+focused_target=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}')
+window_prefix=$(tmux display-message -p '#{session_name}:#{window_index}.')
+
+# Check if focused pane has an agent in statusbar-prev
+prev_file="$CACHE_DIR/statusbar-prev.json"
+if [ -f "$prev_file" ] && jq -e --arg t "$focused_target" 'has($t)' "$prev_file" >/dev/null 2>&1; then
+    target="$focused_target"
+else
+    # Find first agent pane in this window
+    target=$(jq -r --arg wp "$window_prefix" 'keys[] | select(startswith($wp))' "$prev_file" 2>/dev/null | head -1)
+    [ -z "$target" ] && target="$focused_target"
+fi
 
 read_json() { [ -f "$1" ] && cat "$1" || echo "[]"; }
 
