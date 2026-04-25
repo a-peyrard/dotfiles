@@ -72,6 +72,9 @@ vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold" }, {
   end,
   desc = "Check for external file changes",
 })
+vim.fn.timer_start(2000, function()
+  pcall(vim.cmd, "silent! checktime")
+end, { ["repeat"] = -1 })
 
 -- Mouse support (useful in tmux, even if you prefer keyboard)
 vim.opt.mouse = "a"             -- Enable mouse in all modes
