@@ -274,13 +274,17 @@ def main():
     protected_changed = False
 
     # Classify each agent and detect transitions
+    now_ts = time.time()
     agents = {}
-    for pane_id, (state, _) in pane_latest.items():
+    for pane_id, (state, mtime) in pane_latest.items():
         status = state.get("status", "")
         current_tool = state.get("current_tool") or ""
         classification = classify_agent(status, current_tool)
         if classification == "needs_input" and not has_input_dialog(pane_id):
             classification = "working"
+        elif classification == "working" and (now_ts - mtime) > 60 and has_input_dialog(pane_id):
+            classification = "needs_input"
+            _log(f"STALE-OVERRIDE {pane_id} working→needs_input (state age {now_ts - mtime:.0f}s, dialog found)")
         agents[pane_id] = classification
 
         target = pane_to_target.get(pane_id, pane_id)
