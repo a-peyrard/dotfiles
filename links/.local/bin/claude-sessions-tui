@@ -914,9 +914,9 @@ class SessionTracker(App[None]):
         if target not in self._unread_targets:
             return  # already read
         elapsed = now - self._read_pending_since
-        if elapsed >= 1.5:
+        if elapsed >= 3.0:
             self._unread_targets.discard(target)
-            _log(f"UNREAD- {target} (dwell 1.5s met in sidebar)")
+            _log(f"UNREAD- {target} (dwell 3.0s met in sidebar)")
             _save_unread(self._unread_targets)
             self._refresh_card(target)
 
