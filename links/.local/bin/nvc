@@ -9,7 +9,8 @@
 #   nvc --diff <file>                           Show proposed changes (stdin) as diff
 #   nvc --clear                                 Clear all highlights
 #   nvc --close-diff                            Close diff view
-#   nvc [--full-screen] review [D12345|hash|.]  Review a diff/commit/rev in diffview
+#   nvc [--full-screen] review [--light] [D12345|hash|.]  Review a diff/commit/rev
+#                                        --light: gutter highlights instead of diffview
 #   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
 #   nvc expr '<vimscript-expr>'                 Evaluate expression, return result
 #   nvc errors                                  Get recent errors (noice-aware)
@@ -307,9 +308,19 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         exit 0
         ;;
     review)
-        # Review a diff, commit, or rev in diffview
+        # Review a diff, commit, or rev
+        # nvc review [--light] [rev]
+        #   --light: gutter highlights (signify) instead of full diffview
+        #   rev: D12345, hash, or . (defaults to . for --light, picker for heavy)
         shift
-        DIFF_ID="${1:-}"
+        LIGHT_MODE=false
+        DIFF_ID=""
+        for arg in "$@"; do
+            case "$arg" in
+                --light) LIGHT_MODE=true ;;
+                *) DIFF_ID="$arg" ;;
+            esac
+        done
 
         # For non-D arguments, resolve hash + repo in the shell's cwd
         # (nvim may be running in a different repo)
@@ -325,40 +336,99 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         fi
 
         # For D* diffs, resolve repo root so nvim can cd there
-        # (nvim's cwd may not be a repo)
         if [ -n "$DIFF_ID" ] && [[ "$DIFF_ID" =~ ^D ]] && [ -z "$REVIEW_REPO" ]; then
             REVIEW_REPO=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || true)
         fi
 
-        if socket_alive; then
-            # Nvim already running — send command directly
-            if [ -n "$DIFF_ID" ]; then
-                if [ -n "$REVIEW_REPO" ]; then
-                    # cd nvim to the correct repo before reviewing
-                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
+        # For D* diffs in light mode, resolve to local hash (signify needs a revspec)
+        if [ "$LIGHT_MODE" = true ] && [ -n "$DIFF_ID" ] && [[ "$DIFF_ID" =~ ^D ]]; then
+            RESOLVED_HASH=$(sl log -r "phabdiff('${DIFF_ID}')" --template '{node|short}' 2>/dev/null || true)
+            [ -n "$RESOLVED_HASH" ] && DIFF_ID="$RESOLVED_HASH"
+        fi
+
+        if [ "$LIGHT_MODE" = true ]; then
+            # --- Light review: gutter highlights via signify ---
+            REV="${DIFF_ID:-.}"
+
+            if socket_alive; then
+                # Existing nvim — toggle or set review mode
+                if [ -z "$DIFF_ID" ]; then
+                    cat > /tmp/nvim-claude-light-review.lua << 'LUAEOF'
+require("lazy").load({ plugins = {"vim-signify"} })
+if _G.signify_review then
+    _G.signify_review.set_review_mode(not _G.signify_review.review_mode)
+end
+LUAEOF
                 else
-                    nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID}<CR>"
+                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
+require("lazy").load({ plugins = {"vim-signify"} })
+if _G.signify_review then
+    local sr = _G.signify_review
+    if sr.review_mode and sr.current_rev == "${REV}" then
+        sr.set_review_mode(false)
+    else
+        sr.set_review_mode(true, "${REV}")
+    end
+end
+LUAEOF
                 fi
-                echo "Reviewing ${DIFF_ID}" >&2
+                nvim --server "$SOCK" --remote-send '<Esc>:luafile /tmp/nvim-claude-light-review.lua<CR>'
+                echo "Toggled lightweight review (gutter)" >&2
             else
-                nvim --server "$SOCK" --remote-send '<Esc>:ReviewDiff<CR>'
-                echo "Opening review picker" >&2
+                # Fresh spawn — open repo with changed files + enable review
+                [ -e "$SOCK" ] && rm -f "$SOCK"
+                if [ -n "$REVIEW_REPO" ]; then
+                    REPO_ROOT="$REVIEW_REPO"
+                else
+                    REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
+                fi
+
+                FIRST_FILE=$(cd "$REPO_ROOT" && sl status --change "${REV}" --no-status 2>/dev/null | head -1)
+                OPEN_FILE=""
+                [ -n "$FIRST_FILE" ] && OPEN_FILE="${REPO_ROOT}/${FIRST_FILE}"
+
+                cat > /tmp/nvim-claude-light-review.lua << LUAEOF
+require("lazy").load({ plugins = {"vim-signify"} })
+if _G.signify_review then
+    _G.signify_review.set_review_mode(true, "${REV}")
+end
+LUAEOF
+
+                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK ${OPEN_FILE} -c 'autocmd VimEnter * ++once luafile /tmp/nvim-claude-light-review.lua'"
+                echo "Spawned nvim with light review" >&2
+                if ! wait_for_socket; then
+                    echo "Error: timed out waiting for nvim socket" >&2
+                    exit 1
+                fi
             fi
         else
-            # No nvim — spawn with ReviewDiff as startup command
-            [ -e "$SOCK" ] && rm -f "$SOCK"
-            # Use resolved repo, or try shell's repo, or fallback to $HOME
-            if [ -n "$REVIEW_REPO" ]; then
-                REPO_ROOT="$REVIEW_REPO"
+            # --- Heavy review: full diffview ---
+            if socket_alive; then
+                if [ -n "$DIFF_ID" ]; then
+                    if [ -n "$REVIEW_REPO" ]; then
+                        nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
+                    else
+                        nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID}<CR>"
+                    fi
+                    echo "Reviewing ${DIFF_ID}" >&2
+                else
+                    nvim --server "$SOCK" --remote-send '<Esc>:ReviewDiff<CR>'
+                    echo "Opening review picker" >&2
+                fi
             else
-                REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
-            fi
-            if [ -n "$DIFF_ID" ]; then
-                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
-                echo "Reviewing ${DIFF_ID}" >&2
-            else
-                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
-                echo "Opening review picker" >&2
+                [ -e "$SOCK" ] && rm -f "$SOCK"
+                if [ -n "$REVIEW_REPO" ]; then
+                    REPO_ROOT="$REVIEW_REPO"
+                else
+                    REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
+                fi
+                if [ -n "$DIFF_ID" ]; then
+                    spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
+                    echo "Reviewing ${DIFF_ID}" >&2
+                else
+                    spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
+                    echo "Opening review picker" >&2
+                fi
             fi
         fi
         exit 0
@@ -381,7 +451,7 @@ if [ $# -lt 1 ]; then
     echo "       nvc --highlight-lines <file>:<s>-<e>      Highlight lines" >&2
     echo "       nvc --diff <file>                         Show diff (stdin)" >&2
     echo "       nvc --clear                               Clear highlights" >&2
-    echo "       nvc review [D12345|hash|.]                Review diff/commit/rev" >&2
+    echo "       nvc review [--light] [D12345|hash|.]       Review diff/commit/rev" >&2
     echo "       nvc debug set-breakpoints <file:line> ...  Set breakpoints" >&2
     echo "       nvc debug attach                          Start DAP session" >&2
     echo "       nvc debug clear-breakpoints               Clear breakpoints" >&2
@@ -584,13 +654,13 @@ elif [ "$HAS_HIGHLIGHT" = true ]; then
 else
     if [ ${#QUERIES[@]} -eq 1 ]; then
         IFS='|' read -r _ file line _ <<< "${QUERIES[0]}"
-        [ ! -f "$file" ] && echo "Error: file not found: $file" >&2 && exit 1
+        [ ! -e "$file" ] && echo "Error: path not found: $file" >&2 && exit 1
         open_in_nvim "$file" "$line"
     else
         ensure_nvim_running
         for q in "${QUERIES[@]}"; do
             IFS='|' read -r _ file line _ <<< "$q"
-            [ ! -f "$file" ] && echo "Warning: file not found: $file" >&2 && continue
+            [ ! -e "$file" ] && echo "Warning: path not found: $file" >&2 && continue
             nvim --server "$SOCK" --remote-send "<Esc>:e ${file}<CR>"
         done
         IFS='|' read -r _ file line _ <<< "${QUERIES[-1]}"
