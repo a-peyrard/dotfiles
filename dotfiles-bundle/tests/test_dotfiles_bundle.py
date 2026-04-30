@@ -1588,6 +1588,60 @@ class TestPlaceNewFile:
         assert placed.exists()
         assert placed.read_bytes() == b"#!/bin/bash\necho hi"
 
+    def test_should_place_file_as_base_private(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        private_dir = tmp_path / "dotfiles-private"
+        (repo_root / "links").mkdir(parents=True)
+        private_dir.mkdir()
+        self._patch_globals(monkeypatch, repo_root, private_dir)
+
+        # WHEN
+        result = _place_new_file(
+            ".claude/memory/feedback.md", b"some feedback", "base_private", "dev-server"
+        )
+
+        # THEN
+        assert result is True
+        private_path = private_dir / "links" / ".claude/memory/feedback.md"
+        assert private_path.exists()
+        assert private_path.read_bytes() == b"some feedback"
+        symlink = repo_root / "links" / ".claude/memory/feedback.md"
+        assert symlink.is_symlink()
+        assert symlink.resolve() == private_path.resolve()
+
+    def test_should_fail_base_private_when_private_dir_missing(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        repo_root.mkdir()
+        nonexistent = tmp_path / "no-such-dir"
+        self._patch_globals(monkeypatch, repo_root, nonexistent)
+
+        # WHEN
+        result = _place_new_file(".claude/memory/feedback.md", b"content", "base_private", "dev-server")
+
+        # THEN
+        assert result is False
+
+    def test_should_replace_existing_symlink_for_base_private(self, tmp_path, monkeypatch):
+        # GIVEN
+        repo_root = tmp_path / "dotfiles"
+        private_dir = tmp_path / "dotfiles-private"
+        private_dir.mkdir()
+        self._patch_globals(monkeypatch, repo_root, private_dir)
+        symlink_path = repo_root / "links" / ".claude/memory/feedback.md"
+        symlink_path.parent.mkdir(parents=True)
+        symlink_path.symlink_to("/nonexistent")
+
+        # WHEN
+        result = _place_new_file(".claude/memory/feedback.md", b"new content", "base_private", "dev-server")
+
+        # THEN
+        assert result is True
+        private_path = private_dir / "links" / ".claude/memory/feedback.md"
+        assert private_path.read_bytes() == b"new content"
+        assert symlink_path.resolve() == private_path.resolve()
+
     def test_should_return_false_for_skip(self, tmp_path, monkeypatch):
         # GIVEN
         repo_root = tmp_path / "dotfiles"
@@ -1689,6 +1743,16 @@ class TestPromptNewFilePlacement:
 
         # THEN
         assert result == "base"
+
+    def test_should_return_base_private_for_choice_4(self, monkeypatch):
+        # GIVEN
+        monkeypatch.setattr("builtins.input", lambda _: "4")
+
+        # WHEN
+        result = _prompt_new_file_placement(".claude/memory/feedback.md", "dev-server")
+
+        # THEN
+        assert result == "base_private"
 
     def test_should_return_skip_for_choice_s(self, monkeypatch):
         # GIVEN
