@@ -75,6 +75,8 @@ exclude = [
     ".claude/.claude-templates-manifest.json",
     ".claude/image-cache/",
     ".claude/statusline-costs/",
+    ".claude/usage-data/",
+    ".claude/memory/",
     # Python cache
     "**/__pycache__/",
 ]
