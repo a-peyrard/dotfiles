@@ -113,23 +113,23 @@ function M.highlight(queries)
 end
 
 -- Navigation keymaps (set once on first require)
-vim.keymap.set('n', ']c', function()
+vim.keymap.set('n', ']h', function()
   local r = get_regions(); if #r == 0 then return end
   local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
   for _, s in ipairs(r) do
     if s > cur then vim.api.nvim_win_set_cursor(0, { s + 1, 0 }); vim.cmd('normal! zz'); return end
   end
   vim.api.nvim_win_set_cursor(0, { r[1] + 1, 0 }); vim.cmd('normal! zz')
-end, { desc = 'Next highlight' })
+end, { desc = 'Next Claude highlight' })
 
-vim.keymap.set('n', '[c', function()
+vim.keymap.set('n', '[h', function()
   local r = get_regions(); if #r == 0 then return end
   local cur = vim.api.nvim_win_get_cursor(0)[1] - 1
   for i = #r, 1, -1 do
     if r[i] < cur then vim.api.nvim_win_set_cursor(0, { r[i] + 1, 0 }); vim.cmd('normal! zz'); return end
   end
   vim.api.nvim_win_set_cursor(0, { r[#r] + 1, 0 }); vim.cmd('normal! zz')
-end, { desc = 'Prev highlight' })
+end, { desc = 'Prev Claude highlight' })
 
 vim.keymap.set('n', '<leader>hx', function()
   M.clear()
