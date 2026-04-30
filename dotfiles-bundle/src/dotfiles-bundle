@@ -2008,12 +2008,13 @@ def _prompt_new_file_placement(rel_path: str, bundle_name: str) -> str:
     print(f"    [1] bundle private  ({Color.DIM}bundles/{bundle_name}/...add.private{Color.RESET})")
     print(f"    [2] bundle public   ({Color.DIM}bundles/{bundle_name}/...add{Color.RESET})")
     print(f"    [3] base public     ({Color.DIM}links/{rel_path}{Color.RESET})")
+    print(f"    [4] base private    ({Color.DIM}dotfiles-private/links/{rel_path}{Color.RESET})")
     print(f"    [s] skip")
     while True:
         choice = input("    Choice [1]: ").strip().lower() or "1"
-        if choice in ("1", "2", "3", "s"):
-            return {"1": "private", "2": "public", "3": "base", "s": "skip"}[choice]
-        print("    Invalid choice. Enter 1, 2, 3, or s.")
+        if choice in ("1", "2", "3", "4", "s"):
+            return {"1": "private", "2": "public", "3": "base", "4": "base_private", "s": "skip"}[choice]
+        print("    Invalid choice. Enter 1, 2, 3, 4, or s.")
 
 
 def _place_new_file(
@@ -2074,6 +2075,30 @@ def _place_new_file(
         except ValueError:
             disp = base_path
         info(f"{Color.GREEN}Placed:{Color.RESET} {rel_path} -> {disp}")
+        return True
+
+    elif placement == "base_private":
+        if not private_dir.exists():
+            print(f"    {Color.YELLOW}Private repo not found at {private_dir}{Color.RESET}")
+            return False
+
+        private_path = private_dir / "links" / rel_path
+        private_path.parent.mkdir(parents=True, exist_ok=True)
+        private_path.write_bytes(content)
+        if mode is not None:
+            private_path.chmod(mode)
+
+        symlink_path = LINKS_DIR / rel_path
+        symlink_path.parent.mkdir(parents=True, exist_ok=True)
+        if symlink_path.exists() or symlink_path.is_symlink():
+            symlink_path.unlink()
+        symlink_path.symlink_to(private_path)
+
+        try:
+            disp = symlink_path.relative_to(REPO_ROOT)
+        except ValueError:
+            disp = symlink_path
+        info(f"{Color.GREEN}Placed:{Color.RESET} {rel_path} -> {disp} (private, symlinked)")
         return True
 
     return False
