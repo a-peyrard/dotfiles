@@ -25,6 +25,7 @@ A PARA workspace is available at `~/gdrive` and syncs automatically via Google D
 - **Tests**: Follow the existing test patterns in the codebase. Look at neighboring test files for structure, naming, fixtures, and assertion style before writing new tests. Use given/when/then structure in test bodies. Name test methods descriptively: `test_it_should_return_error_when_device_not_found`.
 - **Tests before refactoring**: When refactoring, write or update tests FIRST against the current behavior, verify they pass, THEN refactor. The tests serve as a safety net to validate correctness of the refactor. Never refactor and write new tests in the same step.
 - **One concern per step**: Don't combine behavior changes with structural changes. Separate refactoring (no behavior change) from feature work (behavior change). This makes each step independently verifiable.
+- **Blank lines as punctuation**: Use blank lines to separate logical concepts within functions — like paragraphs in prose. Group tightly related lines together (vertical density), separate distinct steps with a blank line (vertical openness). A wall of uninterrupted code is hard to scan. Don't go overboard — but never write a 20-line method as one unbroken block either.
 
 ## Working Style
 - When exploring a task or codebase, produce a structured plan first, then implement in a fresh session.
