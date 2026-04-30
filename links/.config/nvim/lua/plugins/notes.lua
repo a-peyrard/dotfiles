@@ -2,8 +2,9 @@
 -- Works standalone (cwd-based notes) or with review mode (diff-scoped via vim.g.review_diff_id)
 -- Displays notes as HINT diagnostics → lsp_lines, trouble, signs, scrollbar all work for free
 return {
-  dir = vim.fn.stdpath("config") .. "/lua/plugins",
+  dir = vim.fn.stdpath("config") .. "/lua/local/notes",
   name = "notes",
+  virtual = true,
   lazy = false,
   config = function()
     local diag_ns = vim.api.nvim_create_namespace("review_notes")
