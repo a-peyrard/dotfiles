@@ -52,6 +52,10 @@ load_tmux_env
 STATE_DIR="$STATE_BASE/$TMUX_PID"
 STATE_FILE="$STATE_DIR/$session_id.json"
 
+UNREAD_CACHE_DIR="$HOME/.cache/claude-sessions"
+UNREAD_FILE="$UNREAD_CACHE_DIR/unread.json"
+UNREAD_LOG="$UNREAD_CACHE_DIR/unread.log"
+
 write_state() {
     local status="$1" current_tool="${2:-null}"
     mkdir -p "$STATE_DIR"
@@ -68,6 +72,26 @@ write_state() {
           status:$st, status_since:$ss,
           current_tool:(if $ct == "null" then null else $ct end)}' \
         > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+read_prev_status() {
+    [ -f "$STATE_FILE" ] && jq -r '.status // empty' "$STATE_FILE" 2>/dev/null
+}
+
+# Mark pane target as unread (for working→idle transitions)
+mark_unread() {
+    local target="$1"
+    mkdir -p "$UNREAD_CACHE_DIR"
+    local current
+    current=$(cat "$UNREAD_FILE" 2>/dev/null || echo "[]")
+    if ! echo "$current" | jq -e --arg t "$target" 'index($t) != null' >/dev/null 2>&1; then
+        echo "$current" | jq --arg t "$target" '. + [$t]' > "$UNREAD_FILE"
+    fi
+    echo "$(date +%H:%M:%S) HOOK:stop UNREAD+ $target (working→idle transition)" >> "$UNREAD_LOG"
+}
+
+resolve_pane_target() {
+    timeout 1 tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null
 }
 
 # ── Event handlers ───────────────────────────────────────────────────────────
@@ -91,7 +115,12 @@ case "$EVENT" in
         ;;
 
     stop)
+        prev_status=$(read_prev_status)
         write_state "waiting"
+        if [ "$prev_status" = "working" ]; then
+            target=$(resolve_pane_target)
+            [ -n "$target" ] && mark_unread "$target"
+        fi
         ;;
 
     notification)
