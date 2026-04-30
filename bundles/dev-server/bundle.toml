@@ -76,7 +76,6 @@ exclude = [
     ".claude/image-cache/",
     ".claude/statusline-costs/",
     ".claude/usage-data/",
-    ".claude/memory/",
     # Python cache
     "**/__pycache__/",
 ]
