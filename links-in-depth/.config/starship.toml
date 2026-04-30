@@ -15,8 +15,7 @@ $git_status\
 ${custom.git_modified}\
 ${custom.git_clean}\
 ${custom.git_ahead_behind}\
-$hg_branch\
-$hg_state\
+${custom.sl_branch}\
 ${custom.sl_status}\
 ${custom.sl_clean}\
 ${custom.sl_draft}\
@@ -70,14 +69,10 @@ renamed = "[▴](blue) "
 deleted = "[✖](red) "
 disabled = false
 
-# Mercurial/Sapling branch support (native)
+# Mercurial/Sapling branch support (native) — replaced by custom.sl_branch
 [hg_branch]
-format = "[$branch]($style) "
-symbol = ""
-style = "yellow"
-disabled = false
+disabled = true
 
-# Mercurial/Sapling state (rebase, merge, etc.)
 [hg_state]
 disabled = true
 
@@ -119,6 +114,14 @@ format = "([$output](blue) )"
 disabled = false
 
 # Sapling (sl) custom modules
+# Smart branch: named bookmark > diff number (D12345) > commit title > short hash
+[custom.sl_branch]
+command = "~/.bin/sl-branch-check"
+when = "sl root 2>/dev/null"
+format = "[$output]($style) "
+style = "yellow"
+disabled = false
+
 # Custom module to show Sapling status (additions, deletions, modifications, etc.)
 [custom.sl_status]
 command = "~/.bin/sl-status-check"
