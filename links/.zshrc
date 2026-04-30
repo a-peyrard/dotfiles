@@ -185,3 +185,6 @@ fi
 # Profiling output
 # =============================================================================
 [[ -n "$ZSH_PROFILE" ]] && zprof
+
+# Google Drive auto-mount (managed by gdrive-mount plugin)
+[ -f ~/.claude/gdrive-mount-scripts/auto-mount.sh ] && ( source ~/.claude/gdrive-mount-scripts/auto-mount.sh ) &>/dev/null & disown
