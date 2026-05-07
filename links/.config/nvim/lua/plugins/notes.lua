@@ -113,6 +113,10 @@ return {
       end
 
       -- Floating input at cursor (multi-line capable)
+      vim.api.nvim_set_hl(0, 'NotesBorder', { fg = '#e0af68', bg = 'NONE', default = true })
+      vim.api.nvim_set_hl(0, 'NotesTitle', { fg = '#e0af68', bold = true, default = true })
+      vim.api.nvim_set_hl(0, 'NotesFloat', { bg = '#1a1b26', default = true })
+
       local input_buf = vim.api.nvim_create_buf(false, true)
       local win_width = math.min(80, vim.api.nvim_win_get_width(0) - 10)
       local input_win = vim.api.nvim_open_win(input_buf, true, {
@@ -123,13 +127,17 @@ return {
         height = 5,
         style = "minimal",
         border = "rounded",
-        title = " 📝 " .. location .. " (C-s save, q close) ",
+        title = " 📝 Note ",
         title_pos = "left",
+        footer = " " .. location .. "  C-s save  q close ",
+        footer_pos = "left",
       })
       vim.bo[input_buf].buftype = "nofile"
       vim.bo[input_buf].filetype = "markdown"
       vim.wo[input_win].wrap = true
       vim.wo[input_win].linebreak = true
+      vim.wo[input_win].winblend = 10
+      vim.api.nvim_win_set_option(input_win, 'winhighlight', 'FloatBorder:NotesBorder,FloatTitle:NotesTitle,FloatFooter:NotesBorder,NormalFloat:NotesFloat')
 
       -- Pre-fill with existing comment if editing
       if prefill and prefill ~= "" then

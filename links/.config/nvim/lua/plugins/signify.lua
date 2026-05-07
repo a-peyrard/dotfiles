@@ -77,51 +77,150 @@ return {
     -- Additional keymaps for signify-specific features
     vim.keymap.set("n", "<leader>hd", "<cmd>SignifyDiff<cr>", { desc = "Signify: Diff this" })
 
-    -- Hunk preview in a floating window (replaces SignifyHunkDiff)
-    vim.keymap.set("n", "<leader>hp", function()
-      -- Capture SignifyHunkDiff output
-      local output = vim.fn.execute("SignifyHunkDiff")
-      -- The diff is now in the preview window — find it and move to floating
-      for _, win in ipairs(vim.api.nvim_list_wins()) do
-        if vim.wo[win].previewwindow then
-          local buf = vim.api.nvim_win_get_buf(win)
-          local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-          -- Close the preview window
-          vim.api.nvim_win_close(win, true)
+    -- Override signify's popup to use a bordered floating window.
+    -- SignifyHunkDiff is async (diff runs in callback), so we can't intercept
+    -- after the call — we override the popup function signify calls internally.
+    local popup_win = nil
 
-          if #lines == 0 or (#lines == 1 and lines[1] == "") then
-            vim.notify("No hunk at cursor", vim.log.levels.WARN)
-            return
-          end
+    local ns_hunk = vim.api.nvim_create_namespace("signify_hunk_preview")
+    vim.api.nvim_set_hl(0, "HunkPreviewDelete", { bg = "#3a2020" })
+    vim.api.nvim_set_hl(0, "HunkPreviewAdd", { bg = "#203a20" })
+    vim.api.nvim_set_hl(0, "HunkPreviewBorder", { fg = "#98c379", bg = "NONE", default = true })
+    vim.api.nvim_set_hl(0, "HunkPreviewTitle", { fg = "#98c379", bold = true, default = true })
+    vim.api.nvim_set_hl(0, "HunkPreviewFloat", { bg = "#1a1b26", default = true })
 
-          -- Open in a floating window
-          local float_buf = vim.api.nvim_create_buf(false, true)
-          vim.api.nvim_buf_set_lines(float_buf, 0, -1, false, lines)
-          vim.bo[float_buf].filetype = "diff"
-          vim.bo[float_buf].bufhidden = "wipe"
+    local CONTEXT_LINES = 3
 
-          local width = math.min(80, vim.o.columns - 8)
-          local height = math.min(#lines, math.floor(vim.o.lines * 0.4))
-          local float_win = vim.api.nvim_open_win(float_buf, true, {
-            relative = "cursor",
-            row = 1,
-            col = 0,
-            width = width,
-            height = height,
-            style = "minimal",
-            border = "rounded",
-            title = " Hunk Preview ",
-            title_pos = "center",
-          })
+    _G._signify_popup_create = function(hunkdiff)
+      if popup_win and vim.api.nvim_win_is_valid(popup_win) then
+        vim.api.nvim_win_close(popup_win, true)
+      end
 
-          -- Close with q or Esc
-          vim.keymap.set("n", "q", function() vim.api.nvim_win_close(float_win, true) end, { buffer = float_buf })
-          vim.keymap.set("n", "<Esc>", function() vim.api.nvim_win_close(float_win, true) end, { buffer = float_buf })
-          return
+      if #hunkdiff == 0 then return end
+
+      -- Re-run diff with context to get full hunk with surrounding code
+      local file = vim.fn.expand("%:p")
+      local repo_root = vim.fs.root(file, ".hg")
+      if not repo_root then return end
+
+      local rel_path = file:sub(#repo_root + 2)
+      local rev_arg = review_state.review_mode
+        and { "--rev", review_state.current_rev .. "^" }
+        or {}
+
+      local cmd = { "hg", "--config", "alias.diff=diff", "diff",
+        "--color=never", "--nodates", "-U" .. CONTEXT_LINES }
+      for _, a in ipairs(rev_arg) do table.insert(cmd, a) end
+      table.insert(cmd, "--")
+      table.insert(cmd, rel_path)
+
+      local result = vim.system(cmd, { text = true, cwd = repo_root }):wait()
+      if result.code ~= 0 or not result.stdout then return end
+
+      -- Find the hunk at cursor position
+      local cur_line = vim.fn.line(".")
+      local matched_hunk = nil
+
+      -- Parse all hunks, find the one containing cursor
+      local all_lines = vim.split(result.stdout, "\n", { plain = true })
+      local hunks = {}
+      local current_hunk = nil
+
+      for _, line in ipairs(all_lines) do
+        local os, oc, ns, nc = line:match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
+        if os then
+          current_hunk = {
+            old_start = tonumber(os),
+            old_count = tonumber(oc) or 1,
+            new_start = tonumber(ns),
+            new_count = tonumber(nc) or 1,
+            lines = {},
+          }
+          table.insert(hunks, current_hunk)
+        elseif current_hunk and (line:match("^[%+%- ]") or line == "") then
+          table.insert(current_hunk.lines, line)
         end
       end
-      vim.notify("No hunk at cursor", vim.log.levels.WARN)
-    end, { desc = "Signify: Preview hunk (floating)" })
+
+      for _, hunk in ipairs(hunks) do
+        local ns, nc = hunk.new_start, hunk.new_count
+        if nc == 0 then
+          if cur_line == ns then matched_hunk = hunk; break end
+        else
+          if cur_line >= ns and cur_line < ns + nc then matched_hunk = hunk; break end
+        end
+      end
+
+      if not matched_hunk then return end
+
+      -- Build display: strip +/- prefixes, track line types for highlighting
+      local display_lines = {}
+      local line_types = {} -- "add", "del", or "ctx"
+
+      for _, line in ipairs(matched_hunk.lines) do
+        if line:match("^%+") then
+          table.insert(display_lines, line:sub(2))
+          table.insert(line_types, "add")
+        elseif line:match("^%-") then
+          table.insert(display_lines, line:sub(2))
+          table.insert(line_types, "del")
+        else
+          -- context line (leading space)
+          table.insert(display_lines, line:sub(2))
+          table.insert(line_types, "ctx")
+        end
+      end
+
+      if #display_lines == 0 then return end
+
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, display_lines)
+
+      local source_ft = vim.bo.filetype
+      if source_ft and source_ft ~= "" then vim.bo[buf].filetype = source_ft end
+      vim.bo[buf].bufhidden = "wipe"
+
+      local max_line_len = 0
+      for _, l in ipairs(display_lines) do
+        max_line_len = math.max(max_line_len, #l)
+      end
+      local width = math.min(math.max(max_line_len + 4, 40), vim.o.columns - 8)
+      local height = math.min(#display_lines, math.floor(vim.o.lines * 0.4))
+
+      popup_win = vim.api.nvim_open_win(buf, true, {
+        relative = "cursor", row = 1, col = 0,
+        width = width, height = height,
+        style = "minimal", border = "rounded",
+        title = " Hunk Diff ", title_pos = "center",
+      })
+      vim.wo[popup_win].winblend = 10
+      vim.api.nvim_win_set_option(popup_win, 'winhighlight', 'NormalFloat:HunkPreviewFloat,FloatBorder:HunkPreviewBorder,FloatTitle:HunkPreviewTitle')
+
+      -- Apply red/green background tints (syntax highlighting shows through)
+      for i, kind in ipairs(line_types) do
+        if kind == "del" or kind == "add" then
+          vim.api.nvim_buf_set_extmark(buf, ns_hunk, i - 1, 0, {
+            end_row = i,
+            hl_group = kind == "del" and "HunkPreviewDelete" or "HunkPreviewAdd",
+            hl_eol = true,
+          })
+        end
+      end
+
+      vim.keymap.set("n", "q", function()
+        if vim.api.nvim_win_is_valid(popup_win) then vim.api.nvim_win_close(popup_win, true) end
+      end, { buffer = buf })
+      vim.keymap.set("n", "<Esc>", function()
+        if vim.api.nvim_win_is_valid(popup_win) then vim.api.nvim_win_close(popup_win, true) end
+      end, { buffer = buf })
+    end
+
+    -- Override lives in autoload/sy/util.vim (E746 requires matching script name).
+    -- Force-load it now so it takes precedence over signify's version.
+    vim.cmd("runtime autoload/sy/util.vim")
+
+    vim.keymap.set("n", "<leader>hp", "<cmd>SignifyHunkDiff<cr>",
+      { desc = "Signify: Preview hunk (floating)" })
 
     -- Undo hunk — guarded in review mode
     vim.keymap.set("n", "<leader>hu", function()

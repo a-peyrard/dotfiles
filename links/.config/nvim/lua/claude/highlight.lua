@@ -133,6 +133,8 @@ end, { desc = 'Prev Claude highlight' })
 
 vim.keymap.set('n', '<leader>hx', function()
   M.clear()
+  local ok, send = pcall(require, 'claude.send')
+  if ok then send.clear() end
 end, { desc = 'Clear Claude highlights' })
 
 return M
