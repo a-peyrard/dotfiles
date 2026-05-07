@@ -11,10 +11,16 @@
 #   nvc --close-diff                            Close diff view
 #   nvc [--full-screen] review [--light] [D12345|hash|.]  Review a diff/commit/rev
 #                                        --light: gutter highlights instead of diffview
+#   nvc restart                                   Restart nvim preserving buffers/state
+#   nvc kill                                     Force-kill hung nvim + clean socket
 #   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
 #   nvc expr '<vimscript-expr>'                 Evaluate expression, return result
 #   nvc errors                                  Get recent errors (noice-aware)
 #   nvc messages                                Get raw :messages output
+#   nvc send [--no-submit] [--file <path>]       Send prompt to Claude Code pane
+#   nvc diff-review <file>                      Interactive diff review (stdin = proposed)
+#   nvc diagnostics [file]                      Get LSP diagnostics from nvim
+#   nvc buffers                                 List open buffers with metadata
 #   nvc debug set-breakpoints <file:line> ...   Set DAP breakpoints at locations
 #   nvc debug attach                            Start DAP from /tmp/fdb-dap.json
 #   nvc debug clear-breakpoints                 Clear all breakpoints
@@ -35,18 +41,59 @@ if [[ "${1:-}" == "--full-screen" ]]; then
     shift
 fi
 
-# Scope socket per tmux window — use TMUX_PANE to resolve the correct window
-# even when this pane is not focused (tmux display-message without -t returns
-# the focused window, which may be a different one).
-WINDOW_ID=$(tmux display-message -t "${TMUX_PANE:-}" -p '#{window_id}' 2>/dev/null || echo "default")
-SOCK="/tmp/nvim-claude-${USER}-${WINDOW_ID}.sock"
+# ============================================================================
+# Debug logging — set NVC_DEBUG=1 to enable
+# ============================================================================
+
+NVC_LOG="/tmp/nvc-debug.log"
+
+nvc_log() {
+    if [ "${NVC_DEBUG:-0}" = "1" ]; then
+        echo "[$(date '+%H:%M:%S')] [$$] $*" >> "$NVC_LOG"
+    fi
+}
+
+nvc_log "--- nvc ${1:-} (TMUX_PANE=${TMUX_PANE:-none}, NVC_SESSION_ID=${NVC_SESSION_ID:-none})"
+
+# ============================================================================
+# UUID-based session pairing
+#
+# Each Claude-nvim pair shares a UUID. Three files per pair:
+#   /tmp/nvim-claude-$USER-$UUID.sock  — nvim socket (Claude → nvim)
+#   /tmp/nvc-claude-$UUID              — Claude's pane ID (nvim → Claude)
+#   /tmp/nvc-me-$PANE                  — UUID lookup (pane → UUID)
+#
+# Resolution:
+#   Claude → nvim: $TMUX_PANE → nvc-me file → UUID → socket
+#   nvim → Claude: $NVC_SESSION_ID → nvc-claude file → pane ID → paste-buffer
+# ============================================================================
+
+generate_session_id() {
+    head -c4 /dev/urandom | xxd -p
+}
+
+# Resolve session UUID from env var or lookup file
+SESSION_ID="${NVC_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ] && [ -f "/tmp/nvc-me-${TMUX_PANE:-}" ]; then
+    SESSION_ID=$(cat "/tmp/nvc-me-${TMUX_PANE}")
+    nvc_log "resolved UUID from nvc-me file: ${SESSION_ID}"
+fi
+
+# Derive socket from session ID (empty if no session yet)
+if [ -n "$SESSION_ID" ]; then
+    SOCK="/tmp/nvim-claude-${USER}-${SESSION_ID}.sock"
+    nvc_log "socket: ${SOCK} (exists=$([ -S "$SOCK" ] && echo yes || echo no))"
+else
+    SOCK=""
+    nvc_log "no session — SOCK empty"
+fi
 
 # ============================================================================
 # Low-level helpers
 # ============================================================================
 
 spawn_nvim() {
-    local cmd="$1"
+    local cmd="NVC_SESSION_ID=${SESSION_ID} $1"
     if $FULL_SCREEN; then
         exec bash -c "$cmd"
     else
@@ -54,24 +101,70 @@ spawn_nvim() {
     fi
 }
 
-find_nvim_pane() {
-    tmux list-panes -t "$WINDOW_ID" -F '#{pane_id} #{pane_current_command}' 2>/dev/null \
-        | grep -i nvim \
-        | head -1 \
-        | awk '{print $1}'
-}
-
 socket_alive() {
-    [ -S "$SOCK" ] && nvim --server "$SOCK" --remote-expr "1" >/dev/null 2>&1
+    [ -n "$SOCK" ] && [ -S "$SOCK" ] && nvim --server "$SOCK" --remote-expr "1" >/dev/null 2>&1
 }
 
 wait_for_socket() {
     local attempts=0
-    while [ $attempts -lt 20 ]; do
+    while [ $attempts -lt 30 ]; do
         if socket_alive; then return 0; fi
-        sleep 0.2
+        sleep 0.3
         attempts=$((attempts + 1))
     done
+    return 1
+}
+
+# Resolve Claude's pane ID from session
+resolve_claude_pane() {
+    if [ -n "$SESSION_ID" ] && [ -f "/tmp/nvc-claude-${SESSION_ID}" ]; then
+        local pane
+        pane=$(cat "/tmp/nvc-claude-${SESSION_ID}")
+        nvc_log "resolve_claude: file says pane=${pane}"
+        if tmux display-message -t "$pane" -p '#{pane_id}' >/dev/null 2>&1; then
+            nvc_log "resolve_claude: pane ${pane} alive"
+            echo "$pane"
+            return 0
+        fi
+        nvc_log "resolve_claude: pane ${pane} dead — cleaning"
+        rm -f "/tmp/nvc-claude-${SESSION_ID}"
+    fi
+    nvc_log "resolve_claude: no valid Claude pane"
+    return 1
+}
+
+# Bootstrap a new Claude session and pair it with current UUID
+bootstrap_claude() {
+    # Ensure we have a session ID
+    if [ -z "$SESSION_ID" ]; then
+        SESSION_ID=$(generate_session_id)
+        SOCK="/tmp/nvim-claude-${USER}-${SESSION_ID}.sock"
+        echo "$SESSION_ID" > "/tmp/nvc-me-${TMUX_PANE}"
+        nvc_log "bootstrap: generated new session ${SESSION_ID}"
+    fi
+
+    # Capture the exact new pane ID — no ambiguity with existing Claude panes
+    local claude_pane
+    claude_pane=$(tmux split-window -t "${TMUX_PANE}" -h -l 50% -P -F '#{pane_id}' 'claude')
+    nvc_log "bootstrap: spawned Claude in pane ${claude_pane}"
+
+    # Wait for Claude to be ready
+    local attempts=0
+    while [ $attempts -lt 20 ]; do
+        local cmd
+        cmd=$(tmux display-message -t "$claude_pane" -p '#{pane_current_command}' 2>/dev/null || true)
+        if [[ "$cmd" == *claude* || "$cmd" == *node* ]]; then
+            echo "$SESSION_ID" > "/tmp/nvc-me-${claude_pane}"
+            echo "$claude_pane" > "/tmp/nvc-claude-${SESSION_ID}"
+            nvc_log "bootstrap: paired ${claude_pane} with session ${SESSION_ID}"
+            echo "$claude_pane"
+            return 0
+        fi
+        sleep 0.5
+        attempts=$((attempts + 1))
+    done
+
+    echo "Error: timed out waiting for Claude Code to start" >&2
     return 1
 }
 
@@ -79,22 +172,18 @@ ensure_nvim_running() {
     # Already connected? Done.
     if socket_alive; then return 0; fi
 
-    # Stale socket file — clean up
-    [ -e "$SOCK" ] && rm -f "$SOCK"
+    # Stale socket — clean up
+    [ -n "$SOCK" ] && [ -e "$SOCK" ] && rm -f "$SOCK"
 
-    local nvim_pane
-    nvim_pane=$(find_nvim_pane || true)
-
-    if [ -n "$nvim_pane" ]; then
-        # Nvim pane exists but socket is dead — ask it to start listening
-        tmux send-keys -t "$nvim_pane" Escape ":lua vim.fn.serverstart('$SOCK')" Enter
-        if wait_for_socket; then
-            echo "Reconnected to existing nvim pane" >&2
-            return 0
-        fi
-        # serverstart failed — pane is probably stuck, kill and respawn
-        tmux kill-pane -t "$nvim_pane" 2>/dev/null || true
+    # Generate session if none exists
+    if [ -z "$SESSION_ID" ]; then
+        SESSION_ID=$(generate_session_id)
+        SOCK="/tmp/nvim-claude-${USER}-${SESSION_ID}.sock"
     fi
+
+    # Write pairing files
+    echo "$SESSION_ID" > "/tmp/nvc-me-${TMUX_PANE}"
+    echo "${TMUX_PANE}" > "/tmp/nvc-claude-${SESSION_ID}"
 
     # Spawn fresh nvim
     spawn_nvim "nvim --listen $SOCK"
@@ -193,15 +282,66 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         exit 0
         ;;
     quit|close)
-        # Close the nvim instance in this window
-        # <C-\><C-n> escapes from any mode (terminal, DAP REPL, insert, etc.)
-        # dap.terminate() kills external debug processes before quit
-        # qa! closes all windows, tabs, buffers, terminal jobs unconditionally
+        # Close the nvim instance and clean up session
         if socket_alive; then
             nvim --server "$SOCK" --remote-send '<C-\><C-n>:lua pcall(function() require("dap").terminate() end); vim.cmd("qa!")<CR>'
+            # Clean up session files
+            if [ -n "$SESSION_ID" ]; then
+                sleep 0.3
+                rm -f "$SOCK" "/tmp/nvc-claude-${SESSION_ID}" "/tmp/nvc-me-${TMUX_PANE}"
+            fi
             echo "Nvim closed"
         else
-            echo "No nvim instance running in this window"
+            echo "No nvim instance running"
+        fi
+        exit 0
+        ;;
+    restart)
+        # Restart nvim preserving open buffers and cursor positions.
+        # Saves session → quits → respawns with same socket + UUID.
+        VIM_SESSION="/tmp/nvim-claude-session-${SESSION_ID:-default}.vim"
+        if ! socket_alive; then
+            echo "No nvim running — use nvc to open one" >&2
+            exit 1
+        fi
+
+        NVIM_CWD=$(nvim --server "$SOCK" --remote-expr 'getcwd()' 2>/dev/null || pwd)
+
+        # Save session and quit
+        nvim --server "$SOCK" --remote-send "<Esc>:mksession! ${VIM_SESSION}<CR>"
+        sleep 0.3
+        nvim --server "$SOCK" --remote-send '<C-\><C-n>:lua pcall(function() require("dap").terminate() end); vim.cmd("qa!")<CR>'
+        sleep 1
+        [ -e "$SOCK" ] && rm -f "$SOCK"
+
+        # Respawn with same socket and UUID
+        spawn_nvim "bash -c 'cd ${NVIM_CWD} && nvim --listen ${SOCK} -c \"source ${VIM_SESSION}\"'"
+        if wait_for_socket; then
+            echo "Nvim restarted (session restored)" >&2
+        else
+            echo "Error: timed out waiting for nvim" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    kill)
+        # Force-kill — kill nvim process, clean up session files and socket.
+        # ONLY use when explicitly requested by the user. Never call automatically.
+        if [ -n "$SOCK" ]; then
+            NVIM_PID=$(pgrep -f "nvim.*--listen.*${SOCK}" 2>/dev/null || true)
+            if [ -n "$NVIM_PID" ]; then
+                kill "$NVIM_PID" 2>/dev/null || true
+                echo "Killed nvim (PID $NVIM_PID)" >&2
+            fi
+            rm -f "$SOCK"
+            echo "Removed socket" >&2
+        fi
+        if [ -n "$SESSION_ID" ]; then
+            rm -f "/tmp/nvc-claude-${SESSION_ID}" "/tmp/nvc-me-${TMUX_PANE}"
+            echo "Cleaned session ${SESSION_ID}" >&2
+        fi
+        if [ -z "$SESSION_ID" ] && [ -z "$SOCK" ]; then
+            echo "No session to clean" >&2
         fi
         exit 0
         ;;
@@ -348,54 +488,105 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
 
         if [ "$LIGHT_MODE" = true ]; then
             # --- Light review: gutter highlights via signify ---
-            REV="${DIFF_ID:-.}"
+            # No arg = working tree (uncommitted changes), signify normal mode
+            # With rev = commit review, signify review mode (diff against rev^)
+            if [ -n "$REVIEW_REPO" ]; then
+                REPO_ROOT="$REVIEW_REPO"
+            else
+                REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
+            fi
+
+            # Collect changed files: working tree vs specific commit
+            CHANGED_FILES=()
+            if [ -z "$DIFF_ID" ]; then
+                # Working tree — uncommitted changes
+                while IFS= read -r f; do
+                    [ -n "$f" ] && CHANGED_FILES+=("${REPO_ROOT}/${f}")
+                done < <(cd "$REPO_ROOT" && sl status --no-status 2>/dev/null)
+                REVIEW_LABEL="working tree"
+            else
+                # Specific commit
+                while IFS= read -r f; do
+                    [ -n "$f" ] && CHANGED_FILES+=("${REPO_ROOT}/${f}")
+                done < <(cd "$REPO_ROOT" && sl status --change "${DIFF_ID}" --no-status 2>/dev/null)
+                REVIEW_LABEL="rev ${DIFF_ID}"
+            fi
 
             if socket_alive; then
-                # Existing nvim — toggle or set review mode
+                # Existing nvim — open all changed files
+                for f in "${CHANGED_FILES[@]}"; do
+                    nvim --server "$SOCK" --remote-send "<Esc>:edit ${f}<CR>"
+                done
+
                 if [ -z "$DIFF_ID" ]; then
+                    # Working tree: ensure review mode is OFF (signify normal = WC vs .)
                     cat > /tmp/nvim-claude-light-review.lua << 'LUAEOF'
 require("lazy").load({ plugins = {"vim-signify"} })
-if _G.signify_review then
-    _G.signify_review.set_review_mode(not _G.signify_review.review_mode)
+if _G.signify_review and _G.signify_review.review_mode then
+    _G.signify_review.set_review_mode(false)
 end
 LUAEOF
                 else
+                    # Commit review: enable review mode for this rev
                     cat > /tmp/nvim-claude-light-review.lua << LUAEOF
 require("lazy").load({ plugins = {"vim-signify"} })
 if _G.signify_review then
     local sr = _G.signify_review
-    if sr.review_mode and sr.current_rev == "${REV}" then
+    if sr.review_mode and sr.current_rev == "${DIFF_ID}" then
         sr.set_review_mode(false)
     else
-        sr.set_review_mode(true, "${REV}")
+        sr.set_review_mode(true, "${DIFF_ID}")
     end
 end
 LUAEOF
                 fi
                 nvim --server "$SOCK" --remote-send '<Esc>:luafile /tmp/nvim-claude-light-review.lua<CR>'
-                echo "Toggled lightweight review (gutter)" >&2
+                echo "Light review (${REVIEW_LABEL}), ${#CHANGED_FILES[@]} file(s)" >&2
             else
-                # Fresh spawn — open repo with changed files + enable review
+                # Fresh spawn — open all changed files
                 [ -e "$SOCK" ] && rm -f "$SOCK"
-                if [ -n "$REVIEW_REPO" ]; then
-                    REPO_ROOT="$REVIEW_REPO"
+
+                if [ -z "$DIFF_ID" ]; then
+                    # Working tree: no review mode needed
+                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
+require("lazy").load({ plugins = {"vim-signify"} })
+local files = {
+$(printf '  "%s",\n' "${CHANGED_FILES[@]}")
+}
+for i, f in ipairs(files) do
+    vim.cmd("edit " .. vim.fn.fnameescape(f))
+    vim.cmd("filetype detect")
+    vim.cmd("SignifyEnable")
+end
+if files[1] then
+    vim.cmd("buffer " .. vim.fn.bufnr(files[1]))
+end
+vim.notify(#files .. " file(s) — working tree", vim.log.levels.INFO)
+LUAEOF
                 else
-                    REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
+                    # Commit review: enable review mode
+                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
+require("lazy").load({ plugins = {"vim-signify"} })
+local files = {
+$(printf '  "%s",\n' "${CHANGED_FILES[@]}")
+}
+for i, f in ipairs(files) do
+    vim.cmd("edit " .. vim.fn.fnameescape(f))
+    vim.cmd("filetype detect")
+    vim.cmd("SignifyEnable")
+end
+if files[1] then
+    vim.cmd("buffer " .. vim.fn.bufnr(files[1]))
+end
+if _G.signify_review then
+    _G.signify_review.set_review_mode(true, "${DIFF_ID}")
+end
+vim.notify(#files .. " file(s) — rev ${DIFF_ID}", vim.log.levels.INFO)
+LUAEOF
                 fi
 
-                FIRST_FILE=$(cd "$REPO_ROOT" && sl status --change "${REV}" --no-status 2>/dev/null | head -1)
-                OPEN_FILE=""
-                [ -n "$FIRST_FILE" ] && OPEN_FILE="${REPO_ROOT}/${FIRST_FILE}"
-
-                cat > /tmp/nvim-claude-light-review.lua << LUAEOF
-require("lazy").load({ plugins = {"vim-signify"} })
-if _G.signify_review then
-    _G.signify_review.set_review_mode(true, "${REV}")
-end
-LUAEOF
-
-                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK ${OPEN_FILE} -c 'autocmd VimEnter * ++once luafile /tmp/nvim-claude-light-review.lua'"
-                echo "Spawned nvim with light review" >&2
+                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once luafile /tmp/nvim-claude-light-review.lua'"
+                echo "Spawned nvim with light review (${REVIEW_LABEL}), ${#CHANGED_FILES[@]} file(s)" >&2
                 if ! wait_for_socket; then
                     echo "Error: timed out waiting for nvim socket" >&2
                     exit 1
@@ -433,6 +624,189 @@ LUAEOF
         fi
         exit 0
         ;;
+    send)
+        # Send prompt text to the Claude Code pane
+        # Usage: nvc send [--no-submit] [--pane <id>] [--file <path>] [< stdin]
+        shift
+        NO_SUBMIT=false
+        INPUT_FILE=""
+        TARGET_PANE=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --no-submit) NO_SUBMIT=true; shift ;;
+                --file) INPUT_FILE="$2"; shift 2 ;;
+                --pane) TARGET_PANE="$2"; shift 2 ;;
+                *) echo "Usage: nvc send [--no-submit] [--pane <id>] [--file <path>]" >&2; exit 1 ;;
+            esac
+        done
+
+        # Resolve Claude pane: explicit > UUID session > bootstrap
+        if [ -z "$TARGET_PANE" ]; then
+            TARGET_PANE=$(resolve_claude_pane || true)
+            nvc_log "send: resolved target=${TARGET_PANE:-empty}"
+        fi
+        if [ -z "$TARGET_PANE" ]; then
+            nvc_log "send: no Claude found — bootstrapping"
+            TARGET_PANE=$(bootstrap_claude)
+            nvc_log "send: bootstrapped target=${TARGET_PANE}"
+        fi
+
+        # Read input from file or stdin
+        if [ -n "$INPUT_FILE" ]; then
+            if [ ! -f "$INPUT_FILE" ]; then
+                echo "Error: file not found: $INPUT_FILE" >&2
+                exit 1
+            fi
+        else
+            INPUT_FILE="/tmp/nvc-send-$$.txt"
+            cat > "$INPUT_FILE"
+            trap 'rm -f "$INPUT_FILE"' EXIT
+        fi
+
+        # Inject via tmux paste-buffer (safe for any content including code)
+        tmux load-buffer -b nvc_send "$INPUT_FILE"
+        tmux paste-buffer -b nvc_send -t "$TARGET_PANE" -p
+        tmux delete-buffer -b nvc_send 2>/dev/null || true
+
+        if [ "$NO_SUBMIT" = false ]; then
+            tmux send-keys -t "$TARGET_PANE" Enter
+        fi
+
+        echo "Sent to Claude (pane $TARGET_PANE)" >&2
+        exit 0
+        ;;
+    diff-review)
+        # Interactive diff review: show proposed changes, let user cherry-pick
+        # Usage: echo "proposed content" | nvc diff-review <file>
+        # User accepts (<leader>aa / :w) or rejects (<leader>ad / :q)
+        # Result is sent back to Claude via nvc send
+        shift
+        FILE="${1:-}"
+        if [ -z "$FILE" ]; then
+            echo "Usage: echo 'proposed' | nvc diff-review <file>" >&2
+            exit 1
+        fi
+        [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+        if [ ! -f "$FILE" ]; then
+            echo "Error: file not found: $FILE" >&2
+            exit 1
+        fi
+
+        # Save proposed content to temp file
+        REVIEW_ID="$$-$(date +%s)"
+        PROPOSED="/tmp/nvc-diff-review-${REVIEW_ID}-proposed"
+        cat > "$PROPOSED"
+
+        ensure_nvim_running
+
+        # Generate Lua to open interactive diff review
+        cat > /tmp/nvc-diff-review-${REVIEW_ID}.lua << LUAEOF
+require("claude.diff_review").open("${FILE}", "${PROPOSED}", "${REVIEW_ID}")
+LUAEOF
+
+        nvim --server "$SOCK" --remote-send "<Esc>:luafile /tmp/nvc-diff-review-${REVIEW_ID}.lua<CR>"
+        echo "Opened diff review for ${FILE##*/}" >&2
+        exit 0
+        ;;
+    diagnostics)
+        # Get LSP diagnostics from nvim
+        # Usage: nvc diagnostics          — all diagnostics
+        #        nvc diagnostics <file>   — diagnostics for a specific file
+        shift
+        FILE="${1:-}"
+        [[ -n "$FILE" && "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
+
+        if ! socket_alive; then
+            echo "No nvim instance running" >&2
+            exit 1
+        fi
+
+        local_out="/tmp/nvc-diagnostics-$$.txt"
+        if [ -n "$FILE" ]; then
+            FILTER="local bufnr = vim.fn.bufnr('${FILE}'); if bufnr == -1 then diags = {} else diags = vim.diagnostic.get(bufnr) end"
+        else
+            FILTER="diags = vim.diagnostic.get()"
+        fi
+
+        cat > /tmp/nvc-diagnostics-$$.lua << LUAEOF
+local diags
+${FILTER}
+local sev_map = { [1]="ERROR", [2]="WARN", [3]="INFO", [4]="HINT" }
+local lines = {}
+for _, d in ipairs(diags) do
+  local fname = vim.api.nvim_buf_get_name(d.bufnr)
+  local root = vim.fs.root(fname, ".hg") or vim.fs.root(fname, ".git") or ""
+  if root ~= "" then fname = fname:sub(#root + 2) end
+  local sev = sev_map[d.severity] or "?"
+  local src = d.source and (" [" .. d.source .. "]") or ""
+  table.insert(lines, string.format("%s:%d: %s: %s%s", fname, d.lnum + 1, sev, d.message, src))
+end
+local f = io.open("${local_out}", "w")
+if #lines == 0 then
+  f:write("No diagnostics\n")
+else
+  f:write(table.concat(lines, "\n") .. "\n")
+end
+f:close()
+LUAEOF
+
+        nvim --server "$SOCK" --remote-send "<Esc>:luafile /tmp/nvc-diagnostics-$$.lua<CR>"
+        sleep 0.5
+        cat "$local_out"
+        rm -f "$local_out" "/tmp/nvc-diagnostics-$$.lua"
+        exit 0
+        ;;
+    buffers)
+        # List open buffers with metadata
+        if ! socket_alive; then
+            echo "No nvim instance running" >&2
+            exit 1
+        fi
+
+        local_out="/tmp/nvc-buffers-$$.txt"
+        cat > /tmp/nvc-buffers-$$.lua << LUAEOF
+local lines = {}
+for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+  if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].buflisted then
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name ~= "" then
+      local root = vim.fs.root(name, ".hg") or vim.fs.root(name, ".git") or ""
+      if root ~= "" then name = name:sub(#root + 2) end
+      local ft = vim.bo[bufnr].filetype or ""
+      local modified = vim.bo[bufnr].modified
+      local flags = {}
+      if modified then table.insert(flags, "modified") end
+      if bufnr == vim.fn.bufnr() then table.insert(flags, "active") end
+      local meta = ""
+      if #flags > 0 then meta = " [" .. table.concat(flags, ", ") .. "]" end
+      if ft ~= "" then
+        table.insert(lines, string.format("%s (%s)%s", name, ft, meta))
+      else
+        table.insert(lines, string.format("%s%s", name, meta))
+      end
+    end
+  end
+end
+local f = io.open("${local_out}", "w")
+if #lines == 0 then
+  f:write("No open buffers\n")
+else
+  f:write(table.concat(lines, "\n") .. "\n")
+end
+f:close()
+LUAEOF
+
+        nvim --server "$SOCK" --remote-send "<Esc>:luafile /tmp/nvc-buffers-$$.lua<CR>"
+        sleep 0.5
+        cat "$local_out"
+        rm -f "$local_out" "/tmp/nvc-buffers-$$.lua"
+        exit 0
+        ;;
+    test)
+        # Integration tests — delegates to nvc-test
+        shift
+        exec nvc-test "$@"
+        ;;
 esac
 
 # ============================================================================
@@ -455,6 +829,10 @@ if [ $# -lt 1 ]; then
     echo "       nvc debug set-breakpoints <file:line> ...  Set breakpoints" >&2
     echo "       nvc debug attach                          Start DAP session" >&2
     echo "       nvc debug clear-breakpoints               Clear breakpoints" >&2
+    echo "       nvc send [--no-submit] [--file <path>]     Send prompt to Claude" >&2
+    echo "       nvc diff-review <file>                    Interactive diff review" >&2
+    echo "       nvc diagnostics [file]                    Get LSP diagnostics" >&2
+    echo "       nvc buffers                               List open buffers" >&2
     echo "       nvc cmd '<keys>'                          Send raw keys" >&2
     echo "       nvc expr '<expr>'                         Eval expression" >&2
     echo "       nvc errors                                Get errors" >&2

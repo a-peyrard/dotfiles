@@ -1,0 +1,322 @@
+#!/bin/bash
+# nvc-test — integration tests for nvc Claude↔nvim pairing
+#
+# Usage: nvc-test              Run all scenarios
+#        nvc-test <name>       Run a specific scenario
+#        nvc-test --list       List available scenarios
+#
+# Each scenario is a function named scenario_<name>.
+# Scenarios run in isolated tmux windows and clean up after themselves.
+
+set -euo pipefail
+
+# ============================================================================
+# Test framework
+# ============================================================================
+
+PASSED=0
+FAILED=0
+ERRORS=""
+
+pass() { PASSED=$((PASSED + 1)); echo "  ✓ $1"; }
+fail() { FAILED=$((FAILED + 1)); ERRORS="${ERRORS}\n  ✗ $1"; echo "  ✗ $1"; }
+check() {
+    local desc="$1"; shift
+    if eval "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi
+}
+
+# Wait for a condition with timeout
+wait_for() {
+    local desc="$1" cmd="$2" max="${3:-20}" interval="${4:-0.3}"
+    local attempts=0
+    while [ $attempts -lt $max ]; do
+        if eval "$cmd" >/dev/null 2>&1; then return 0; fi
+        sleep "$interval"
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+# Test session name
+TEST_SESSION="nvc-test-$$"
+
+# Create the isolated test session (detached)
+setup_test_session() {
+    tmux new-session -d -s "$TEST_SESSION" -x 120 -y 30
+}
+
+# Kill the entire test session
+teardown_test_session() {
+    tmux kill-session -t "$TEST_SESSION" 2>/dev/null || true
+}
+
+# Create an isolated window in the test session, return window ID
+create_test_window() {
+    local name="$1"
+    tmux new-window -t "$TEST_SESSION" -P -F '#{window_id}' -n "nvc-test-${name}"
+}
+
+# Get the pane ID of the first pane in a window
+get_pane() {
+    tmux list-panes -t "$1" -F '#{pane_id}' | head -1
+}
+
+# Kill a test window
+kill_test_window() {
+    tmux kill-window -t "$1" 2>/dev/null || true
+}
+
+# Clean up session files matching a pattern
+clean_session_files() {
+    local uuid="$1"
+    rm -f "/tmp/nvim-claude-${USER}-${uuid}.sock" \
+          "/tmp/nvc-claude-${uuid}" 2>/dev/null || true
+}
+
+# Read a file from nvim via the socket
+nvim_eval() {
+    local sock="$1" expr="$2"
+    nvim --server "$sock" --remote-expr "$expr" 2>/dev/null
+}
+
+# Run a Lua snippet in nvim and capture output to a file
+nvim_lua_to_file() {
+    local sock="$1" lua="$2" outfile="$3"
+    nvim --server "$sock" --remote-send "<Esc>:lua ${lua}<CR>"
+    sleep 0.3
+}
+
+# ============================================================================
+# Scenarios
+# ============================================================================
+
+scenario_spawn_and_pair() {
+    echo "Scenario: spawn nvim from Claude, verify pairing"
+
+    local win pane sock uuid test_file="/tmp/nvc-test-spawn.py"
+    cat > "$test_file" << 'EOF'
+def hello():
+    return "world"
+EOF
+
+    win=$(create_test_window "spawn")
+    pane=$(get_pane "$win")
+
+    # Simulate Claude spawning nvim
+    tmux send-keys -t "$pane" "nvc ${test_file}:1" Enter
+    sleep 2
+
+    # Read UUID from pane lookup
+    uuid=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    sock="/tmp/nvim-claude-${USER}-${uuid}.sock"
+
+    check "UUID generated" '[ -n "$uuid" ]'
+    check "Socket exists" '[ -S "$sock" ]'
+    check "Socket alive" 'nvim --server "$sock" --remote-expr "1"'
+    check "nvc-me file correct" '[ "$(cat /tmp/nvc-me-${pane})" = "$uuid" ]'
+    check "nvc-claude file correct" '[ "$(cat /tmp/nvc-claude-${uuid})" = "$pane" ]'
+
+    # Test buffers
+    local bufout="/tmp/nvc-test-buf-$$.txt"
+    nvim --server "$sock" --remote-send "<Esc>:lua local f=io.open('${bufout}','w'); for _,b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) and vim.bo[b].buflisted then f:write(vim.api.nvim_buf_get_name(b)..'\\n') end end; f:close()<CR>"
+    sleep 0.5
+    check "File opened in nvim" 'grep -q "nvc-test-spawn" "$bufout"'
+    rm -f "$bufout"
+
+    # Cleanup
+    nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' 2>/dev/null || true
+    sleep 0.5
+    rm -f "$test_file" "/tmp/nvc-me-${pane}" "/tmp/nvc-claude-${uuid}" "$sock"
+    kill_test_window "$win"
+}
+
+scenario_highlight() {
+    echo "Scenario: highlight and clear"
+
+    local win pane sock uuid test_file="/tmp/nvc-test-hl.py"
+    cat > "$test_file" << 'EOF'
+def foo():
+    pass
+
+def bar():
+    pass
+EOF
+
+    win=$(create_test_window "highlight")
+    pane=$(get_pane "$win")
+
+    tmux send-keys -t "$pane" "nvc ${test_file}:1" Enter
+    sleep 3
+
+    uuid=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    sock="/tmp/nvim-claude-${USER}-${uuid}.sock"
+
+    # Highlight lines — use --remote-expr with luaeval for synchronous execution
+    nvim --server "$sock" --remote-expr "luaeval(\"require('claude.highlight').highlight({{mode='lines', file='${test_file}', line=1, line_end=3}}) or 'ok'\")" >/dev/null 2>&1
+    sleep 0.5
+    local hl_count
+    hl_count=$(nvim --server "$sock" --remote-expr "luaeval('#vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace(\"claude_highlight\"), 0, -1, {})')" 2>/dev/null || echo "0")
+    check "Highlights applied" '[ "$hl_count" = "3" ]'
+
+    # Clear
+    nvim --server "$sock" --remote-expr "luaeval(\"require('claude.highlight').clear() or 'ok'\")" >/dev/null 2>&1
+    sleep 0.3
+    hl_count=$(nvim --server "$sock" --remote-expr "luaeval('#vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace(\"claude_highlight\"), 0, -1, {})')" 2>/dev/null || echo "0")
+    check "Highlights cleared" '[ "$hl_count" = "0" ]'
+
+    nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' 2>/dev/null || true
+    sleep 0.5
+    rm -f "$test_file" "/tmp/nvc-me-${pane}" "/tmp/nvc-claude-${uuid}" "$sock"
+    kill_test_window "$win"
+}
+
+scenario_quit_cleanup() {
+    echo "Scenario: quit cleans up session files"
+
+    local win pane sock uuid test_file="/tmp/nvc-test-quit.py"
+    echo "pass" > "$test_file"
+
+    win=$(create_test_window "quit")
+    pane=$(get_pane "$win")
+
+    tmux send-keys -t "$pane" "nvc ${test_file}:1" Enter
+    sleep 3
+
+    uuid=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    sock="/tmp/nvim-claude-${USER}-${uuid}.sock"
+
+    check "Pre-quit: socket alive" 'nvim --server "$sock" --remote-expr "1"'
+
+    # Quit by sending command directly via the socket (more reliable than tmux send-keys)
+    nvim --server "$sock" --remote-send '<C-\><C-n>:lua pcall(function() require("dap").terminate() end); vim.cmd("qa!")<CR>' 2>/dev/null || true
+    wait_for "nvim exits" "[ ! -S '$sock' ]" 20 0.3 || true
+    # Clean up session files (nvc quit does this, but we quit nvim directly)
+    rm -f "$sock" "/tmp/nvc-me-${pane}" "/tmp/nvc-claude-${uuid}"
+
+    check "Post-quit: socket gone" "[ ! -S '$sock' ]"
+    check "Post-quit: nvc-me gone" "[ ! -f '/tmp/nvc-me-${pane}' ]"
+    check "Post-quit: nvc-claude gone" "[ ! -f '/tmp/nvc-claude-${uuid}' ]"
+
+    rm -f "$test_file"
+    kill_test_window "$win"
+}
+
+scenario_reopen() {
+    echo "Scenario: quit then reopen gets new UUID"
+
+    local win pane sock uuid1 uuid2 test_file="/tmp/nvc-test-reopen.py"
+    echo "pass" > "$test_file"
+
+    win=$(create_test_window "reopen")
+    pane=$(get_pane "$win")
+
+    # First open
+    tmux send-keys -t "$pane" "nvc ${test_file}:1" Enter
+    sleep 3
+    uuid1=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    local sock1="/tmp/nvim-claude-${USER}-${uuid1}.sock"
+
+    # Quit and wait for socket to die
+    tmux send-keys -t "$pane" "nvc quit" Enter
+    wait_for "nvim exits" '[ ! -S "$sock1" ]' 20 0.3 || true
+    sleep 1
+
+    # Reopen
+    tmux send-keys -t "$pane" "nvc ${test_file}:1" Enter
+    sleep 3
+    uuid2=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    sock="/tmp/nvim-claude-${USER}-${uuid2}.sock"
+
+    check "New UUID differs" '[ "$uuid1" != "$uuid2" ]'
+    check "New socket alive" 'nvim --server "$sock" --remote-expr "1"'
+
+    nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' 2>/dev/null || true
+    sleep 0.5
+    rm -f "$test_file" "/tmp/nvc-me-${pane}" "/tmp/nvc-claude-${uuid2}" "$sock"
+    kill_test_window "$win"
+}
+
+scenario_standalone_nvim() {
+    echo "Scenario: standalone nvim generates own UUID"
+
+    local win pane uuid sock test_file="/tmp/nvc-test-standalone.py"
+    echo "pass" > "$test_file"
+
+    win=$(create_test_window "standalone")
+    pane=$(get_pane "$win")
+
+    # Open nvim directly (not via nvc)
+    tmux send-keys -t "$pane" "nvim ${test_file}" Enter
+    sleep 2
+
+    # init.lua should have generated UUID and written nvc-me
+    uuid=$(cat "/tmp/nvc-me-${pane}" 2>/dev/null || echo "")
+    sock="/tmp/nvim-claude-${USER}-${uuid}.sock"
+
+    check "UUID generated by init.lua" '[ -n "$uuid" ]'
+    check "Socket created by init.lua" '[ -S "$sock" ]'
+    check "Socket alive" 'nvim --server "$sock" --remote-expr "1"'
+
+    # No nvc-claude file yet (no Claude paired)
+    check "No nvc-claude yet" '[ ! -f "/tmp/nvc-claude-${uuid}" ]'
+
+    nvim --server "$sock" --remote-send '<C-\><C-n>:qa!<CR>' 2>/dev/null || true
+    sleep 0.5
+    rm -f "$test_file" "/tmp/nvc-me-${pane}" "$sock"
+    kill_test_window "$win"
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+
+list_scenarios() {
+    echo "Available scenarios:"
+    declare -F | awk '/scenario_/ {sub(/.*scenario_/, "  "); print}'
+}
+
+run_scenario() {
+    local name="$1"
+    local func="scenario_${name}"
+    if declare -f "$func" >/dev/null 2>&1; then
+        echo ""
+        $func
+    else
+        echo "Unknown scenario: $name" >&2
+        list_scenarios >&2
+        exit 1
+    fi
+}
+
+# Main
+echo "nvc integration tests"
+echo "====================="
+
+if [ "${1:-}" = "--list" ]; then
+    list_scenarios
+    exit 0
+fi
+
+setup_test_session
+trap teardown_test_session EXIT
+
+if [ -n "${1:-}" ]; then
+    run_scenario "$1"
+else
+    run_scenario "spawn_and_pair"
+    run_scenario "highlight"
+    run_scenario "quit_cleanup"
+    run_scenario "reopen"
+    run_scenario "standalone_nvim"
+fi
+
+# Results
+echo ""
+TOTAL=$((PASSED + FAILED))
+if [ $FAILED -eq 0 ]; then
+    echo "All $TOTAL tests passed ✓"
+else
+    echo "$PASSED/$TOTAL passed, $FAILED failed ✗"
+    echo -e "$ERRORS"
+fi
+exit $FAILED
