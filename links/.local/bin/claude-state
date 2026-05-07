@@ -22,7 +22,7 @@ resolve_tmux_pane() {
 
 # Hot-path events (PreToolUse, UserPromptSubmit) skip the tmux fallback for perf
 case "$EVENT" in
-    pre-tool-use|prompt-submit)
+    pre-tool-use|post-tool-use|prompt-submit)
         [ -z "$TMUX_PANE" ] && exit 0
         ;;
     *)
@@ -112,6 +112,10 @@ case "$EVENT" in
         else
             write_state "working" "$tool_name"
         fi
+        ;;
+
+    post-tool-use)
+        write_state "working"
         ;;
 
     stop)
