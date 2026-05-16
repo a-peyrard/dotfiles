@@ -12,6 +12,27 @@ chat-app-like interface, and lets you jump to them or send input.
 
 from __future__ import annotations
 
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+    print("Usage: claude-sessions-tui")
+    print()
+    print("Rich TUI (Textual-based) for managing concurrent Claude Code sessions")
+    print("in tmux. Shows session status, metrics, and live pane preview.")
+    print()
+    print("Keys:")
+    print("  q          Quit")
+    print("  Enter      Jump to selected session's tmux pane")
+    print("  j/k        Navigate sessions")
+    print("  u          Toggle unread flag")
+    print("  t          Cycle color theme")
+    print("  Tab        Toggle sidebar/preview focus")
+    print("  r          Refresh session list")
+    print("  1-9,a-m    Quick-select session by index")
+    print()
+    print("Requires: tmux, uv (auto-installs textual dependency)")
+    sys.exit(0)
+
 import json
 import os
 
@@ -914,9 +935,9 @@ class SessionTracker(App[None]):
         if target not in self._unread_targets:
             return  # already read
         elapsed = now - self._read_pending_since
-        if elapsed >= 3.0:
+        if elapsed >= 2.0:
             self._unread_targets.discard(target)
-            _log(f"UNREAD- {target} (dwell 3.0s met in sidebar)")
+            _log(f"UNREAD- {target} (dwell 2.0s met in sidebar)")
             _save_unread(self._unread_targets)
             self._refresh_card(target)
 

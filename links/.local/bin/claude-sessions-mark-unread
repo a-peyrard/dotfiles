@@ -4,6 +4,17 @@
 # Also writes unread-protected.json so pane-focus detection won't
 # auto-clear until the user has left the window.
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: claude-sessions-mark-unread"
+    echo ""
+    echo "Toggle the unread flag for the current tmux pane's Claude session."
+    echo "Marks as unread if currently read, and vice versa. Syncs with"
+    echo "claude-sessions-tui via shared unread.json."
+    echo ""
+    echo "Designed to be bound to a tmux key (e.g. prefix-u)."
+    exit 0
+fi
+
 CACHE_DIR="$HOME/.cache/claude-sessions"
 UNREAD_FILE="$CACHE_DIR/unread.json"
 PROTECTED_FILE="$CACHE_DIR/unread-protected.json"
