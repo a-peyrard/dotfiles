@@ -1,7 +1,35 @@
-.claude
-!links-in-depth/.claude/
+# Claude project-level settings (repo root and subprojects)
+/.claude/
+links/.config/nvim/.claude/
+
+# Claude runtime data (not worth versioning)
+links/.claude/file-history/
+links/.claude/projects/
+links/.claude/sessions/
+links/.claude/session-env/
+links/.claude/plugins/
+links/.claude/meta/
+links/.claude/backups/
+links/.claude/plans/
+links/.claude/tasks/
+links/.claude/todos/
+links/.claude/paste-cache/
+links/.claude/shell-snapshots/
+links/.claude/agent-market/
+links/.claude/gdrive-mount-scripts/
+links/.claude/image-cache/
+links/.claude/statusline-costs/
+links/.claude/usage-data/
+links/.claude/dcr/
+links/.claude/history.jsonl
+links/.claude/settings.json
+links/.claude/settings.json.*
+links/.claude/settings.local.json
+links/.claude/stats-cache.json
+links/.claude/.claude-templates-manifest.json
+links/.claude/.last-cleanup
+links/.claude/infra-audit.log
 **/CLAUDE.md
-!links-in-depth/.claude/CLAUDE.md
 links/.vim/swaps
 links/.config/nvim/lazy-lock.json
 .netrwhist
@@ -17,5 +45,17 @@ bundles/**/.deploy.log
 # Private repo symlinks (created by dotfiles-private-link)
 links/.private-bin/*
 !links/.private-bin/.gitkeep
+links/.claude/oncall-prompt.md
+links/.claude/memory/reference_gdocs_editing.md
+links/.claude/memory/feedback_bare_urls_for_ghostty.md
+links/.claude/memory/feedback_code_blocks_in_diffs.md
+links/.claude/memory/feedback_oncall_evidence.md
+links/.claude/personas/chaic3.md
+links/.claude/personas/ai-msl.md
+links/.claude/personas/ai-dataeng.md
+links/.claude/commands/knowledge-harvest.md
+links/.claude/commands/noob.md
+links/.claude/skills/test-daemon/
+links/.claude/skills/canvas-chart/
 lib/
 userscripts/
