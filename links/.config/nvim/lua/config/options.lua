@@ -123,6 +123,29 @@ vim.opt.listchars = {
   eol = "¬",       -- End of line
 }
 
+-- Comments: bright purple, distinct from inlay hints
+vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0" })
+
+-- Bold code text (IntelliJ-like readability)
+local bold_groups = {
+  "@variable", "@variable.parameter", "@variable.member",
+  "@function", "@function.call", "@function.method",
+  "@keyword", "@keyword.import", "@keyword.function",
+  "@keyword.conditional", "@keyword.repeat", "@keyword.modifier",
+  "@type", "@type.builtin",
+  "@string", "@number", "@operator", "@punctuation",
+  "@property", "@constructor", "@boolean",
+  "Identifier", "Statement", "Type", "String", "Constant",
+}
+for _, group in ipairs(bold_groups) do
+  local hl = vim.api.nvim_get_hl(0, { name = group, link = false })
+  hl.bold = true
+  vim.api.nvim_set_hl(0, group, hl)
+end
+
+-- Inlay hints: subtle italic, no background (IntelliJ-like)
+vim.api.nvim_set_hl(0, "LspInlayHint", { fg = "#4a5272", italic = true, bg = "NONE" })
+
 -- Ensure diagnostic sign highlights have visible colors
 vim.api.nvim_set_hl(0, "DiagnosticSignError", { fg = "#db4b4b", bg = "NONE" })
 vim.api.nvim_set_hl(0, "DiagnosticSignWarn", { fg = "#e0af68", bg = "NONE" })
@@ -186,10 +209,25 @@ vim.api.nvim_set_hl(0, "DiagnosticVirtualTextWarn", { fg = "#e0af68", bg = "NONE
 vim.api.nvim_set_hl(0, "DiagnosticVirtualTextInfo", { fg = "#0db9d7", bg = "NONE" })
 vim.api.nvim_set_hl(0, "DiagnosticVirtualTextHint", { fg = "#1abc9c", bg = "NONE" })
 
+-- Treesitter-context: match editor background (no contrast band)
+local normal_bg = vim.api.nvim_get_hl(0, { name = "Normal", link = false }).bg
+vim.api.nvim_set_hl(0, "TreesitterContext", { bg = normal_bg })
+vim.api.nvim_set_hl(0, "TreesitterContextLineNumber", { fg = "#3b4261", bg = normal_bg })
+
 -- Persist highlights on colorscheme change
 vim.api.nvim_create_autocmd("ColorScheme", {
   pattern = "*",
   callback = function()
+    -- Bold code text
+    for _, group in ipairs(bold_groups) do
+      local hl = vim.api.nvim_get_hl(0, { name = group, link = false })
+      hl.bold = true
+      vim.api.nvim_set_hl(0, group, hl)
+    end
+    -- Comments
+    vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0" })
+    -- Inlay hints
+    vim.api.nvim_set_hl(0, "LspInlayHint", { fg = "#4a5272", italic = true, bg = "NONE" })
     -- Diagnostic sign highlights
     vim.api.nvim_set_hl(0, "DiagnosticSignError", { fg = "#db4b4b", bg = "NONE" })
     vim.api.nvim_set_hl(0, "DiagnosticSignWarn", { fg = "#e0af68", bg = "NONE" })
@@ -216,6 +254,10 @@ vim.api.nvim_create_autocmd("ColorScheme", {
     vim.api.nvim_set_hl(0, "SatelliteReviewNote", { fg = "#e0af68" })
     vim.api.nvim_set_hl(0, "ReviewNoteVirtText", { fg = "#e0af68", italic = true })
     vim.api.nvim_set_hl(0, "ReviewNoteSign", { fg = "#e0af68", bg = "NONE" })
+    -- Treesitter-context
+    local nbg = vim.api.nvim_get_hl(0, { name = "Normal", link = false }).bg
+    vim.api.nvim_set_hl(0, "TreesitterContext", { bg = nbg })
+    vim.api.nvim_set_hl(0, "TreesitterContextLineNumber", { fg = "#3b4261", bg = nbg })
   end,
 })
 
