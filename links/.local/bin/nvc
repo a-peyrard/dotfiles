@@ -9,8 +9,12 @@
 #   nvc --diff <file>                           Show proposed changes (stdin) as diff
 #   nvc --clear                                 Clear all highlights
 #   nvc --close-diff                            Close diff view
-#   nvc [--full-screen] review [--light] [D12345|hash|.]  Review a diff/commit/rev
+#   nvc [--full-screen] review [--light] [--amend|--since-publish] [D12345|hash|.]
 #                                        --light: gutter highlights instead of diffview
+#                                        --amend: show only changes from last amend (vs predecessor)
+#                                        --since-publish: show changes since last jf submit (vs published version)
+#   nvc sessions                                  List all nvim sessions across tmux windows
+#   nvc clean                                     Remove stale session/socket files
 #   nvc restart                                   Restart nvim preserving buffers/state
 #   nvc kill                                     Force-kill hung nvim + clean socket
 #   nvc cmd '<Esc>:SomeCommand<CR>'             Send raw keys to nvim
@@ -34,6 +38,40 @@
 #                    dedicated tmux windows (devbridge handlers, standalone review).
 
 set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: nvc <file>:<line>                         Open file at line"
+    echo "       nvc --highlight-function <file>:<line>    Highlight function block"
+    echo "       nvc --highlight <file>:<line>             Highlight any block"
+    echo "       nvc --highlight-lines <file>:<s>-<e>      Highlight line ranges"
+    echo "       nvc --diff <file>                         Show proposed changes (stdin)"
+    echo "       nvc --clear                               Clear all highlights"
+    echo "       nvc --close-diff                          Close diff view"
+    echo "       nvc review [--light] [--amend|--since-publish] [D12345|hash|.]"
+    echo "                                                 Review diff/commit/rev"
+    echo "       nvc send [--no-submit] [--file <path>]    Send prompt to Claude pane"
+    echo "       nvc diff-review <file>                    Interactive diff review (stdin)"
+    echo "       nvc diagnostics [file]                    Get LSP diagnostics"
+    echo "       nvc buffers                               List open buffers"
+    echo "       nvc notes [clear|remove <file:line>]      Read/manage review notes"
+    echo "       nvc sessions                              List all nvim sessions"
+    echo "       nvc clean                                 Remove stale session files"
+    echo "       nvc restart                               Restart nvim (preserve state)"
+    echo "       nvc quit                                  Close nvim + clean session"
+    echo "       nvc kill                                  Force-kill hung nvim"
+    echo "       nvc debug set-breakpoints <file:line> ... Set DAP breakpoints"
+    echo "       nvc debug attach                          Start DAP session"
+    echo "       nvc debug clear-breakpoints               Clear all breakpoints"
+    echo "       nvc cmd '<keys>'                          Send raw keys to nvim"
+    echo "       nvc expr '<expr>'                         Eval vimscript expression"
+    echo "       nvc errors                                Get errors (noice-aware)"
+    echo "       nvc messages                              Get raw :messages"
+    echo "       nvc test [name|--list]                    Run integration tests"
+    echo ""
+    echo "Multiple highlight flags can be chained. All commands auto-spawn nvim."
+    echo "Options: --full-screen  Run nvim in current pane (no split)"
+    exit 0
+fi
 
 FULL_SCREEN=false
 if [[ "${1:-}" == "--full-screen" ]]; then
@@ -199,6 +237,89 @@ ensure_nvim_running() {
 # ============================================================================
 
 case "${1:-}" in
+    sessions)
+        # List all nvim sessions across tmux windows
+        printf "  %-28s %-8s %-8s %-10s %-10s %-28s %s\n" "Window" "Nvim" "Claude" "Socket" "Status" "Session" "Buffer"
+        printf "  %-28s %-8s %-8s %-10s %-10s %-28s %s\n" "------" "----" "------" "------" "------" "-------" "------"
+
+        # Collect unique session IDs from nvc-me files
+        declare -A seen_sessions
+        for f in /tmp/nvc-me-*; do
+            [ -f "$f" ] || continue
+            sid=$(cat "$f" 2>/dev/null)
+            [ -z "$sid" ] && continue
+            [ -n "${seen_sessions[$sid]:-}" ] && continue
+            seen_sessions[$sid]=1
+
+            sock="/tmp/nvim-claude-${USER}-${sid}.sock"
+            claude_pane=$(cat "/tmp/nvc-claude-${sid}" 2>/dev/null || echo "")
+
+            # Find the nvim pane (search nvc-me files for this session)
+            nvim_pane=""
+            for mf in /tmp/nvc-me-*; do
+                mp=$(basename "$mf" | sed 's/nvc-me-//')
+                ms=$(cat "$mf" 2>/dev/null)
+                if [ "$ms" = "$sid" ]; then
+                    cmd=$(tmux display-message -t "$mp" -p '#{pane_current_command}' 2>/dev/null || true)
+                    if [ "$cmd" = "nvim" ]; then
+                        nvim_pane="$mp"
+                        break
+                    fi
+                fi
+            done
+            [ -z "$nvim_pane" ] && continue
+
+            # Get window info from nvim pane
+            win_info=$(tmux display-message -t "$nvim_pane" -p '#{window_index} (#{window_name})' 2>/dev/null || echo "?")
+
+            # Check socket status and get buffer
+            status="dead"
+            buffer=""
+            if [ -S "$sock" ] && timeout 2 nvim --server "$sock" --remote-expr "1" >/dev/null 2>&1; then
+                status="alive"
+                buffer=$(timeout 2 nvim --server "$sock" --remote-expr 'fnamemodify(bufname(), ":t")' 2>/dev/null || echo "?")
+            fi
+
+            # Get Claude session name from window name
+            claude_name="—"
+            if [ -n "$claude_pane" ]; then
+                claude_name=$(tmux display-message -t "$claude_pane" -p '#{window_name}' 2>/dev/null || echo "—")
+            fi
+
+            printf "  %-28s %-8s %-8s %-10s %-10s %-28s %s\n" \
+                "$win_info" "$nvim_pane" "${claude_pane:-—}" "${sid:0:8}" "$status" "$claude_name" "$buffer"
+        done
+        exit 0
+        ;;
+    clean)
+        # Remove stale session files for dead nvim/panes
+        cleaned=0
+        for f in /tmp/nvc-me-*; do
+            [ -f "$f" ] || continue
+            pane=$(basename "$f" | sed 's/nvc-me-//')
+            # Check if pane still exists in tmux
+            if ! tmux display-message -t "$pane" -p '' >/dev/null 2>&1; then
+                rm -f "$f"
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        for f in /tmp/nvc-claude-*; do
+            [ -f "$f" ] || continue
+            sid=$(basename "$f" | sed 's/nvc-claude-//')
+            sock="/tmp/nvim-claude-${USER}-${sid}.sock"
+            # If socket is gone or dead, clean up
+            if [ ! -S "$sock" ] || ! timeout 2 nvim --server "$sock" --remote-expr "1" >/dev/null 2>&1; then
+                rm -f "$f" "$sock" 2>/dev/null
+                cleaned=$((cleaned + 1))
+            fi
+        done
+        # Clean stale session vim/lua files
+        for f in /tmp/nvim-claude-session-*.vim /tmp/nvim-claude-highlight.lua /tmp/nvim-claude-light-review.lua; do
+            [ -f "$f" ] && rm -f "$f" && cleaned=$((cleaned + 1))
+        done
+        echo "Cleaned $cleaned stale files"
+        exit 0
+        ;;
     debug)
         # Debug subcommands: set-breakpoints, attach, clear-breakpoints
         shift
@@ -449,18 +570,63 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
         ;;
     review)
         # Review a diff, commit, or rev
-        # nvc review [--light] [rev]
+        # nvc review [--light] [--amend] [--since-publish] [rev]
         #   --light: gutter highlights (signify) instead of full diffview
+        #   --amend: show only changes from the last amend (diff current vs predecessor)
+        #   --since-publish: show changes since last jf submit (diff current vs published version)
         #   rev: D12345, hash, or . (defaults to . for --light, picker for heavy)
         shift
         LIGHT_MODE=false
+        AMEND_MODE=false
+        SINCE_PUBLISH=false
         DIFF_ID=""
         for arg in "$@"; do
             case "$arg" in
                 --light) LIGHT_MODE=true ;;
+                --amend) AMEND_MODE=true ;;
+                --since-publish) SINCE_PUBLISH=true ;;
                 *) DIFF_ID="$arg" ;;
             esac
         done
+
+        # --since-publish: resolve the last-published commit via jf get
+        AMEND_BASE=""
+        if [ "$SINCE_PUBLISH" = true ]; then
+            PUBLISH_REV="${DIFF_ID:-.}"
+            REPO_FOR_PUBLISH=$(sl root 2>/dev/null || pwd)
+
+            # Get the D-number for the target commit
+            PHAB_DIFF=$(cd "$REPO_FOR_PUBLISH" && sl log -r "${PUBLISH_REV}" -T '{phabdiff}' 2>/dev/null || true)
+            if [ -z "$PHAB_DIFF" ]; then
+                echo "Error: no Phabricator diff found for ${PUBLISH_REV}" >&2
+                exit 1
+            fi
+
+            # Download the published version and extract commit hash
+            echo "Fetching published version of ${PHAB_DIFF}..." >&2
+            JF_OUTPUT=$(cd "$REPO_FOR_PUBLISH" && jf get "$PHAB_DIFF" --raw 2>&1 || true)
+            AMEND_BASE=$(echo "$JF_OUTPUT" | grep "success Requested commit available as" | sed 's/.*available as //' | tr -d '.')
+            if [ -z "$AMEND_BASE" ]; then
+                echo "Error: could not fetch published version of ${PHAB_DIFF}" >&2
+                echo "$JF_OUTPUT" >&2
+                exit 1
+            fi
+
+            DIFF_ID="$PUBLISH_REV"
+            nvc_log "since-publish mode: rev=${PUBLISH_REV} diff=${PHAB_DIFF} published=${AMEND_BASE}"
+            echo "Comparing against published ${PHAB_DIFF} (${AMEND_BASE})" >&2
+
+        elif [ "$AMEND_MODE" = true ]; then
+            # --amend: resolve predecessor of target commit
+            AMEND_REV="${DIFF_ID:-.}"
+            AMEND_BASE=$(cd "${REVIEW_REPO:-$(sl root 2>/dev/null || pwd)}" && sl log -r "last(predecessors(${AMEND_REV}) - ${AMEND_REV})" --template '{node|short}' 2>/dev/null || true)
+            if [ -z "$AMEND_BASE" ]; then
+                echo "Error: no predecessor found for ${AMEND_REV} (commit has not been amended)" >&2
+                exit 1
+            fi
+            DIFF_ID="$AMEND_REV"
+            nvc_log "amend mode: rev=${AMEND_REV} predecessor=${AMEND_BASE}"
+        fi
 
         # For non-D arguments, resolve hash + repo in the shell's cwd
         # (nvim may be running in a different repo)
@@ -496,9 +662,15 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
                 REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
             fi
 
-            # Collect changed files: working tree vs specific commit
+            # Collect changed files
             CHANGED_FILES=()
-            if [ -z "$DIFF_ID" ]; then
+            if [ -n "$AMEND_BASE" ]; then
+                # Amend/since-publish: files changed between base and current
+                while IFS= read -r f; do
+                    [ -n "$f" ] && CHANGED_FILES+=("${REPO_ROOT}/${f}")
+                done < <(cd "$REPO_ROOT" && sl diff -r "${AMEND_BASE}" -r "${DIFF_ID}" 2>/dev/null | grep "^diff " | sed 's|.* b/||')
+                REVIEW_LABEL="changes vs ${AMEND_BASE}"
+            elif [ -z "$DIFF_ID" ]; then
                 # Working tree — uncommitted changes
                 while IFS= read -r f; do
                     [ -n "$f" ] && CHANGED_FILES+=("${REPO_ROOT}/${f}")
@@ -512,89 +684,37 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
                 REVIEW_LABEL="rev ${DIFF_ID}"
             fi
 
-            if socket_alive; then
-                # Existing nvim — open all changed files
-                for f in "${CHANGED_FILES[@]}"; do
-                    nvim --server "$SOCK" --remote-send "<Esc>:edit ${f}<CR>"
-                done
+            # Ensure nvim is running (spawns if needed, handles session)
+            ensure_nvim_running
 
-                if [ -z "$DIFF_ID" ]; then
-                    # Working tree: ensure review mode is OFF (signify normal = WC vs .)
-                    cat > /tmp/nvim-claude-light-review.lua << 'LUAEOF'
-require("lazy").load({ plugins = {"vim-signify"} })
-if _G.signify_review and _G.signify_review.review_mode then
-    _G.signify_review.set_review_mode(false)
-end
-LUAEOF
-                else
-                    # Commit review: enable review mode for this rev
-                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
-require("lazy").load({ plugins = {"vim-signify"} })
-if _G.signify_review then
-    local sr = _G.signify_review
-    if sr.review_mode and sr.current_rev == "${DIFF_ID}" then
-        sr.set_review_mode(false)
-    else
-        sr.set_review_mode(true, "${DIFF_ID}")
-    end
-end
-LUAEOF
-                fi
-                nvim --server "$SOCK" --remote-send '<Esc>:luafile /tmp/nvim-claude-light-review.lua<CR>'
-                echo "Light review (${REVIEW_LABEL}), ${#CHANGED_FILES[@]} file(s)" >&2
-            else
-                # Fresh spawn — open all changed files
-                [ -e "$SOCK" ] && rm -f "$SOCK"
-
-                if [ -z "$DIFF_ID" ]; then
-                    # Working tree: no review mode needed
-                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
-require("lazy").load({ plugins = {"vim-signify"} })
-local files = {
-$(printf '  "%s",\n' "${CHANGED_FILES[@]}")
-}
-for i, f in ipairs(files) do
-    vim.cmd("edit " .. vim.fn.fnameescape(f))
-    vim.cmd("filetype detect")
-    vim.cmd("SignifyEnable")
-end
-if files[1] then
-    vim.cmd("buffer " .. vim.fn.bufnr(files[1]))
-end
-vim.notify(#files .. " file(s) — working tree", vim.log.levels.INFO)
-LUAEOF
-                else
-                    # Commit review: enable review mode
-                    cat > /tmp/nvim-claude-light-review.lua << LUAEOF
-require("lazy").load({ plugins = {"vim-signify"} })
-local files = {
-$(printf '  "%s",\n' "${CHANGED_FILES[@]}")
-}
-for i, f in ipairs(files) do
-    vim.cmd("edit " .. vim.fn.fnameescape(f))
-    vim.cmd("filetype detect")
-    vim.cmd("SignifyEnable")
-end
-if files[1] then
-    vim.cmd("buffer " .. vim.fn.bufnr(files[1]))
-end
-if _G.signify_review then
-    _G.signify_review.set_review_mode(true, "${DIFF_ID}")
-end
-vim.notify(#files .. " file(s) — rev ${DIFF_ID}", vim.log.levels.INFO)
-LUAEOF
-                fi
-
-                spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once luafile /tmp/nvim-claude-light-review.lua'"
-                echo "Spawned nvim with light review (${REVIEW_LABEL}), ${#CHANGED_FILES[@]} file(s)" >&2
-                if ! wait_for_socket; then
-                    echo "Error: timed out waiting for nvim socket" >&2
-                    exit 1
-                fi
+            # cd nvim to repo root and open all changed files in one command
+            EDIT_CMDS="cd ${REPO_ROOT}"
+            for f in "${CHANGED_FILES[@]}"; do
+                EDIT_CMDS="${EDIT_CMDS} | badd ${f}"
+            done
+            # Open the last file as the active buffer
+            if [ ${#CHANGED_FILES[@]} -gt 0 ]; then
+                EDIT_CMDS="${EDIT_CMDS} | edit ${CHANGED_FILES[-1]}"
             fi
+            nvim --server "$SOCK" --remote-send "<Esc>:${EDIT_CMDS}<CR>"
+
+            # Set signify mode via RPC
+            if [ -n "$AMEND_BASE" ]; then
+                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.signify_review.light_review('amend', '${DIFF_ID}', '${AMEND_BASE}')<CR>"
+            elif [ -z "$DIFF_ID" ]; then
+                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.signify_review.light_review('working_tree')<CR>"
+            else
+                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.signify_review.light_review('toggle', '${DIFF_ID}')<CR>"
+            fi
+            echo "Light review (${REVIEW_LABEL}), ${#CHANGED_FILES[@]} file(s)" >&2
         else
             # --- Heavy review: full diffview ---
-            if socket_alive; then
+            if [ -n "$AMEND_BASE" ]; then
+                # Amend/since-publish review via diffview
+                ensure_nvim_running
+                nvim --server "$SOCK" --remote-send "<Esc>:DiffviewOpen ${AMEND_BASE}...${DIFF_ID}<CR>"
+                echo "Reviewing changes (${AMEND_BASE} → ${DIFF_ID})" >&2
+            elif socket_alive; then
                 if [ -n "$DIFF_ID" ]; then
                     if [ -n "$REVIEW_REPO" ]; then
                         nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
@@ -607,17 +727,22 @@ LUAEOF
                     echo "Opening review picker" >&2
                 fi
             else
-                [ -e "$SOCK" ] && rm -f "$SOCK"
                 if [ -n "$REVIEW_REPO" ]; then
                     REPO_ROOT="$REVIEW_REPO"
                 else
                     REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
                 fi
+                ensure_nvim_running
+                nvim --server "$SOCK" --remote-send "<Esc>:cd ${REPO_ROOT}<CR>"
                 if [ -n "$DIFF_ID" ]; then
-                    spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff ${DIFF_ID}'"
+                    if [ -n "$REVIEW_REPO" ]; then
+                        nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID} ${REVIEW_REPO}<CR>"
+                    else
+                        nvim --server "$SOCK" --remote-send "<Esc>:ReviewDiff ${DIFF_ID}<CR>"
+                    fi
                     echo "Reviewing ${DIFF_ID}" >&2
                 else
-                    spawn_nvim "cd ${REPO_ROOT} && nvim --listen $SOCK -c 'autocmd VimEnter * ++once ReviewDiff'"
+                    nvim --server "$SOCK" --remote-send '<Esc>:ReviewDiff<CR>'
                     echo "Opening review picker" >&2
                 fi
             fi

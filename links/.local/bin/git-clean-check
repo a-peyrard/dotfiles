@@ -1,5 +1,15 @@
 #!/usr/bin/env zsh
 # Check if git repo is clean and output checkmark
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: git-clean-check"
+    echo ""
+    echo "Check if the current git repo has a clean working tree."
+    echo "Outputs a checkmark (✔) if clean, nothing otherwise."
+    echo "Exits silently if not in a git repo."
+    exit 0
+fi
+
 if git rev-parse --git-dir > /dev/null 2>&1; then
   if [ -z "$(git status --porcelain 2>/dev/null)" ]; then
     echo "✔"
