@@ -1,5 +1,5 @@
 -- Claude send module — send prompts to Claude Code in adjacent tmux pane
--- Keymaps: <leader>cc (interactive), <leader>ce/cr/ct/cd/cf (quick), <leader>cp (picker)
+-- Keymaps: <leader>cc (interactive), <leader>ce/cr/ct/cd (quick), <leader>cx (diagnostic), <leader>cp (picker)
 
 local M = {}
 
@@ -73,8 +73,16 @@ end
 -- ========================================================================
 
 local function rel_path_for(file)
-  local repo_root = vim.fs.root(file, ".hg") or vim.fs.root(file, ".git") or ""
-  if repo_root ~= "" then
+  if not vim.uv.cwd() then
+    pcall(vim.cmd, "cd " .. vim.env.HOME)
+  end
+  local ok, repo_root = pcall(vim.fs.root, file, ".hg")
+  if not ok then repo_root = nil end
+  if not repo_root then
+    ok, repo_root = pcall(vim.fs.root, file, ".git")
+    if not ok then repo_root = nil end
+  end
+  if repo_root and repo_root ~= "" then
     return file:sub(#repo_root + 2)
   end
   return file
@@ -426,7 +434,7 @@ vim.keymap.set("v", "<leader>cd", function()
 end, { desc = "Claude: add docs" })
 
 -- Fix diagnostic under cursor
-vim.keymap.set("n", "<leader>cf", M.send_diagnostic,
+vim.keymap.set("n", "<leader>cx", M.send_diagnostic,
   { desc = "Claude: fix diagnostic" })
 
 -- Template picker

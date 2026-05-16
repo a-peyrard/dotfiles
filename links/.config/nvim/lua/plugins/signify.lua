@@ -33,6 +33,7 @@ return {
     local review_state = {
       review_mode = false,
       current_rev = ".",
+      diff_base = nil,
       normal_cmd = "hg --config alias.diff=diff diff --color=never --nodates -U0 -- %f",
       normal_diffmode_cmd = "hg cat %f",
     }
@@ -48,18 +49,19 @@ return {
       vim.g.signify_vcs_cmds_diffmode = dm_cmds
     end
 
-    local function set_review_mode(enabled, rev)
+    local function set_review_mode(enabled, rev, base)
       rev = rev or "."
       review_state.review_mode = enabled
       review_state.current_rev = rev
+      review_state.diff_base = base
 
       if enabled then
-        local parent = rev .. "^"
+        local diff_base = base or (rev .. "^")
         set_vcs_cmds(
-          string.format("hg --config alias.diff=diff diff --color=never --nodates -U0 --rev %s -- %%f", parent),
-          string.format("hg cat --rev %s %%f", parent)
+          string.format("hg --config alias.diff=diff diff --color=never --nodates -U0 --rev %s -- %%f", diff_base),
+          string.format("hg cat --rev %s %%f", diff_base)
         )
-        vim.notify(string.format("Review mode ON (diff against %s)", parent))
+        vim.notify(string.format("Review mode ON (diff against %s)", diff_base))
       else
         set_vcs_cmds(review_state.normal_cmd, review_state.normal_diffmode_cmd)
         vim.notify("Review mode OFF")
@@ -69,6 +71,23 @@ return {
     end
 
     review_state.set_review_mode = set_review_mode
+
+    review_state.light_review = function(mode, rev, base)
+      require("lazy").load({ plugins = {"vim-signify"} })
+      if mode == "off" or mode == "working_tree" then
+        if review_state.review_mode then set_review_mode(false) end
+      elseif mode == "amend" then
+        set_review_mode(true, rev or ".", base)
+      elseif mode == "toggle" then
+        if review_state.review_mode and review_state.current_rev == rev then
+          set_review_mode(false)
+        else
+          set_review_mode(true, rev, base)
+        end
+      else
+        set_review_mode(true, rev, base)
+      end
+    end
 
     vim.keymap.set("n", "<leader>hc", function()
       set_review_mode(not review_state.review_mode)
@@ -104,9 +123,11 @@ return {
       if not repo_root then return end
 
       local rel_path = file:sub(#repo_root + 2)
-      local rev_arg = review_state.review_mode
-        and { "--rev", review_state.current_rev .. "^" }
-        or {}
+      local rev_arg = {}
+      if review_state.review_mode then
+        local base = review_state.diff_base or (review_state.current_rev .. "^")
+        rev_arg = { "--rev", base }
+      end
 
       local cmd = { "hg", "--config", "alias.diff=diff", "diff",
         "--color=never", "--nodates", "-U" .. CONTEXT_LINES }

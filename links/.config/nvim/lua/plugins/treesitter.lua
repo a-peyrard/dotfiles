@@ -28,6 +28,30 @@ return {
     end,
   },
 
+  -- Sticky context: pins enclosing function/class/block at top of window
+  {
+    "nvim-treesitter/nvim-treesitter-context",
+    dependencies = { "nvim-treesitter/nvim-treesitter" },
+    config = function()
+      require("treesitter-context").setup({
+        max_lines = 10,
+        min_window_height = 20,
+        separator = "─",
+      })
+
+      vim.api.nvim_set_hl(0, "TreesitterContextSeparator", { fg = "#3b4261" })
+      vim.api.nvim_set_hl(0, "TreesitterContextBottom", { underline = false })
+
+      vim.keymap.set("n", "<leader>uc", function()
+        require("treesitter-context").toggle()
+      end, { desc = "Toggle treesitter context" })
+
+      vim.keymap.set("n", "[x", function()
+        require("treesitter-context").go_to_context(vim.v.count1)
+      end, { desc = "Jump to context" })
+    end,
+  },
+
   -- Incremental selection plugin (like IntelliJ's expand selection)
   {
     "sustech-data/wildfire.nvim",
