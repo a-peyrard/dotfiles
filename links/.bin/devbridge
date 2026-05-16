@@ -122,6 +122,12 @@ def cmd_server(args):
                 continue
 
             log.info(f"[{peer}] Received: {cmd} {_summarize_args(cmd_args)}")
+
+            if cmd == "_ping":
+                send_msg(conn, {"ok": True, "output": "pong"})
+                log.info(f"[{peer}] OK: _ping")
+                continue
+
             exit_code, stdout, stderr = dispatch(cmd, cmd_args)
 
             if exit_code == 0:
@@ -247,16 +253,47 @@ def cmd_send(args):
 
 # --- Status ---
 
-def cmd_status(args):
-    port = args.port or DEFAULT_LISTEN_PORT
+def _ping(host: str, port: int, timeout: float = 3) -> str | None:
+    """Send _ping and return None on success, or an error string."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        sock.connect(("127.0.0.1", port))
-        sock.close()
-        print(f"devbridge server is running on port {port}")
-    except (ConnectionRefusedError, socket.timeout):
-        print(f"devbridge server is not running on port {port}")
+        s.connect((host, port))
+        send_msg(s, {"cmd": "_ping", "args": {}})
+        resp = recv_msg(s)
+        if resp is None:
+            return "connected but no response"
+        return None
+    except ConnectionRefusedError:
+        return "connection refused"
+    except socket.timeout:
+        return "timed out"
+    finally:
+        s.close()
+
+
+def cmd_status(args):
+    listen_port = DEFAULT_LISTEN_PORT
+    send_port = DEFAULT_SEND_PORT
+    side = "Mac" if IS_MAC else "devserver"
+    remote = "devserver" if IS_MAC else "Mac"
+    all_ok = True
+
+    local_err = _ping("127.0.0.1", listen_port)
+    if local_err:
+        print(f"  ✗ local ({side}, :{listen_port}) — {local_err}")
+        all_ok = False
+    else:
+        print(f"  ✓ local ({side}, :{listen_port})")
+
+    remote_err = _ping("127.0.0.1", send_port, timeout=5)
+    if remote_err:
+        print(f"  ✗ remote ({remote}, :{send_port}) — {remote_err}")
+        all_ok = False
+    else:
+        print(f"  ✓ remote ({remote}, :{send_port})")
+
+    if not all_ok:
         sys.exit(1)
 
 
@@ -281,8 +318,7 @@ def main():
     sp_send.add_argument("--no-wait", action="store_true", help="Don't wait for response")
 
     # status
-    sp_status = sub.add_parser("status", help="Check if server is running")
-    sp_status.add_argument("-p", "--port", type=int, help=f"Port to check (default: {DEFAULT_LISTEN_PORT})")
+    sp_status = sub.add_parser("status", help="Check connectivity (local + remote)")
 
     args = parser.parse_args()
 
