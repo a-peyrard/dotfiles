@@ -3,6 +3,25 @@
 # Usage: claude-state <session-start|prompt-submit|pre-tool-use|stop|notification|session-end>
 # Reads hook JSON from stdin. Writes state files consumed by claude-status-bar and claude-sessions-tui.
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: claude-state <event>"
+    echo ""
+    echo "Agent state tracking for Claude Code sessions. Writes JSON state"
+    echo "files consumed by claude-status-bar and claude-sessions-tui."
+    echo ""
+    echo "Events:"
+    echo "  session-start   Initialize state (idle)"
+    echo "  prompt-submit   Mark as working"
+    echo "  pre-tool-use    Update with current tool name"
+    echo "  post-tool-use   Reset to working (no tool)"
+    echo "  stop            Mark as waiting, detect unread transitions"
+    echo "  notification    Handle idle_prompt and other notifications"
+    echo "  session-end     Clean up state files"
+    echo ""
+    echo "Reads hook JSON from stdin. Designed as a Claude Code hook."
+    exit 0
+fi
+
 EVENT="$1"
 input=$(cat)
 

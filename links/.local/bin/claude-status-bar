@@ -33,8 +33,27 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
+
+if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+    print("Usage: claude-status-bar")
+    print()
+    print("Operator-centric Claude agent status for tmux status bar.")
+    print()
+    print("Per-tab: colored dot next to window name (highest-priority state).")
+    print("Right-side: reverse-video badge counters per state category.")
+    print()
+    print("States (priority order):")
+    print("  Red    = agent needs input (permission/elicitation)")
+    print("  Orange = agent finished, you haven't looked yet (unread)")
+    print("  Green  = agent is actively working")
+    print("  (none) = agent is idle and read")
+    print()
+    print("Reads state files from claude-state hook. Stdout is consumed by")
+    print("tmux status-right via #(claude-status-bar).")
+    sys.exit(0)
 from collections import defaultdict
 from pathlib import Path
 
@@ -45,7 +64,7 @@ UNREAD_PROTECTED_FILE = CACHE_DIR / "unread-protected.json"
 UNREAD_DWELL_FILE = CACHE_DIR / "unread-dwell.json"
 PREV_STATE_FILE = CACHE_DIR / "statusbar-prev.json"
 
-DWELL_SECONDS = 3.0
+DWELL_SECONDS = 2.0
 LOG_FILE = CACHE_DIR / "unread.log"
 
 

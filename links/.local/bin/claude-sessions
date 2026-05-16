@@ -12,6 +12,26 @@
 #
 set -euo pipefail
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: claude-sessions"
+    echo ""
+    echo "Interactive TUI (fzf-based) for managing concurrent Claude Code"
+    echo "sessions in tmux. Discovers Claude/Happy processes, shows status"
+    echo "and metrics, and lets you jump to or send input to sessions."
+    echo ""
+    echo "Keys:"
+    echo "  Enter    Jump to selected session's tmux pane"
+    echo "  ctrl-a   Answer/send input to a session"
+    echo "  ctrl-r   Refresh the session list"
+    echo "  ctrl-p   Toggle preview"
+    echo ""
+    echo "Internal flags (used by fzf bindings):"
+    echo "  --list      Output formatted session list"
+    echo "  --answer    Enter answer mode for a session"
+    echo "  --preview   Show session preview"
+    exit 0
+fi
+
 SELF_PANE=$(tmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || echo "")
 LIB_DIR="${HOME}/.local/lib/claude-sessions"
 
