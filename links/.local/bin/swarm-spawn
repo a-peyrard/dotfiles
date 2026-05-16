@@ -1,0 +1,240 @@
+#!/bin/bash
+# swarm-spawn — Create a new Claude Code session in a tmux pane or window
+#
+# Usage: swarm-spawn --id <swarm-id> --name <name> [options]
+#
+# Spawn modes (mutually exclusive):
+#   (default)          Split current window into a new pane
+#   --window [N]       Create new window (auto-index) or split into existing window N
+#   --target <target>  Launch in an existing pane (tmux target format)
+#
+# Options:
+#   --prompt-file <path>   File with initial prompt (read and passed as CLI arg)
+#   --prompt <string>      Inline prompt text (written to temp file internally)
+#   --agent <name>         Pass --agent to claude CLI
+#   --cwd <path>           Working directory for the session
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-spawn --id <swarm-id> --name <name> [options]
+
+Create a new Claude Code session in a tmux pane or window.
+
+Options:
+  --id <string>          Swarm identifier (groups related sessions)
+  --name <string>        Session name (must be unique within swarm)
+  --window [N]           Create new window (auto-index) or split into window N
+  --target <tmux-target> Launch in existing pane (%id, session:window.pane)
+  --prompt-file <path>   File with initial prompt
+  --prompt <string>      Inline prompt (written to temp file internally)
+  --agent <name>         Pass --agent to claude CLI
+  --cwd <path>           Working directory for the session
+  --wait-boot            Block until session finishes initial prompt (handshake)
+
+Spawn modes (mutually exclusive):
+  (default)    Split current window (requires TMUX_PANE)
+  --window     New/existing tmux window
+  --target     Existing pane
+
+Env: TMUX_PANE must be set for pane/window modes.
+Files: /tmp/swarm/<id>/panes.txt, meta.txt, launch-<name>.sh
+HELP
+    exit 0
+fi
+
+id=""
+name=""
+window_mode=false
+window_index=""
+target=""
+prompt_file=""
+prompt_text=""
+agent=""
+cwd=""
+wait_boot=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --window)
+            window_mode=true
+            if [ $# -gt 1 ] && [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+                window_index="$2"; shift 2
+            else
+                shift
+            fi
+            ;;
+        --target) target="$2"; shift 2 ;;
+        --prompt-file) prompt_file="$2"; shift 2 ;;
+        --prompt) prompt_text="$2"; shift 2 ;;
+        --agent) agent="$2"; shift 2 ;;
+        --cwd) cwd="$2"; shift 2 ;;
+        --wait-boot) wait_boot=true; shift ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$id" ] || [ -z "$name" ]; then
+    echo "Usage: swarm-spawn --id <id> --name <name> [options]" >&2
+    exit 1
+fi
+
+if [ -n "$target" ] && $window_mode; then
+    echo "ERROR: --target and --window are mutually exclusive" >&2
+    exit 1
+fi
+
+swarm_dir="/tmp/swarm/${id}"
+panes_file="${swarm_dir}/panes.txt"
+meta_file="${swarm_dir}/meta.txt"
+master_pane="${TMUX_PANE:-}"
+
+mkdir -p "$swarm_dir"
+
+# Write meta.txt on first spawn
+if [ ! -f "$meta_file" ]; then
+    cat > "$meta_file" << METAEOF
+created_at=$(date -Iseconds)
+master_pane=${master_pane}
+METAEOF
+fi
+
+# flock + duplicate check
+(
+    flock -x 200
+
+    if [ -f "$panes_file" ] && grep -q "^${name}:" "$panes_file" 2>/dev/null; then
+        echo "ERROR: Name '${name}' already exists in swarm '${id}'" >&2
+        exit 1
+    fi
+
+    # Handle inline prompt → temp file
+    if [ -n "$prompt_text" ] && [ -z "$prompt_file" ]; then
+        prompt_file="${swarm_dir}/prompt-${name}.txt"
+        printf '%s' "$prompt_text" > "$prompt_file"
+    fi
+
+    # Build the claude command
+    claude_cmd="claude --name '${name}'"
+    [ -n "$agent" ] && claude_cmd="$claude_cmd --agent '$agent'"
+
+    # Add prompt as positional arg
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        prompt_content=$(cat "$prompt_file")
+        claude_cmd="$claude_cmd \"\$SWARM_PROMPT\""
+    fi
+
+    # Build launcher script
+    launcher="${swarm_dir}/launch-${name}.sh"
+    cat > "$launcher" << LAUNCHEOF
+#!/bin/bash
+export SWARM_ID="${id}"
+export SWARM_NAME="${name}"
+LAUNCHEOF
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        # Embed prompt in a heredoc with swarm protocol preamble
+        cat >> "$launcher" << 'HEREDOC_START'
+SWARM_PROMPT=$(cat <<'SWARM_PROMPT_EOF'
+[Swarm sub-session protocol]
+You are a sub-session in a swarm. Messages from the master arrive as user input (pasted text). Do NOT poll for files, run loops, or check directories for incoming messages. Just wait — the next message will appear as text in your input.
+When you need to deliver a structured response, write it to a file and run swarm-respond as instructed below.
+---
+
+HEREDOC_START
+        cat "$prompt_file" >> "$launcher"
+        # Ensure newline before closing heredoc tag
+        echo "" >> "$launcher"
+        cat >> "$launcher" << 'HEREDOC_END'
+SWARM_PROMPT_EOF
+)
+HEREDOC_END
+    fi
+
+    if [ -n "$cwd" ]; then
+        echo "cd $(printf '%q' "$cwd")" >> "$launcher"
+    fi
+
+    # Final exec line
+    local_cmd="exec claude --name $(printf '%q' "$name")"
+    [ -n "$agent" ] && local_cmd="$local_cmd --agent $(printf '%q' "$agent")"
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        local_cmd="$local_cmd \"\$SWARM_PROMPT\""
+    fi
+    echo "$local_cmd" >> "$launcher"
+    chmod +x "$launcher"
+
+    # Spawn the pane/window
+    pane_id=""
+
+    if [ -n "$target" ]; then
+        # Target mode: launch Claude in an existing pane
+        pane_id="$target"
+        if [ -n "$cwd" ]; then
+            tmux send-keys -t "$target" "cd $(printf '%q' "$cwd") && SWARM_ID='${id}' SWARM_NAME='${name}' $local_cmd" C-m
+        else
+            tmux send-keys -t "$target" "SWARM_ID='${id}' SWARM_NAME='${name}' $local_cmd" C-m
+        fi
+
+    elif $window_mode; then
+        # Window mode — resolve session from master pane (MUST be set)
+        if [ -z "$master_pane" ]; then
+            echo "ERROR: Window mode requires TMUX_PANE to be set" >&2
+            exit 1
+        fi
+        tmux_session=$(tmux display-message -t "$master_pane" -p '#{session_name}' 2>/dev/null || echo "")
+        if [ -z "$tmux_session" ]; then
+            echo "ERROR: Could not resolve tmux session from pane $master_pane" >&2
+            exit 1
+        fi
+
+        if [ -n "$window_index" ]; then
+            win_target="${tmux_session}:${window_index}"
+
+            # Check if window exists
+            if tmux list-windows -t "${tmux_session}" -F '#{window_index}' 2>/dev/null | grep -q "^${window_index}$"; then
+                # Window exists — split into it
+                pane_id=$(tmux split-window -t "$win_target" -P -F '#{pane_id}' "$launcher")
+            else
+                # Window doesn't exist — create it
+                pane_id=$(tmux new-window -t "$win_target" -n "$name" -P -F '#{pane_id}' "$launcher")
+            fi
+        else
+            # Auto-assign window index
+            pane_id=$(tmux new-window -t "${tmux_session}" -n "$name" -P -F '#{pane_id}' "$launcher")
+        fi
+
+    else
+        # Default: pane mode — split from master's pane (MUST be set)
+        if [ -z "$master_pane" ]; then
+            echo "ERROR: Pane mode requires TMUX_PANE to be set (no --window or --target specified)" >&2
+            exit 1
+        fi
+        pane_id=$(tmux split-window -t "$master_pane" -P -F '#{pane_id}' "$launcher")
+        master_window=$(tmux display-message -t "$master_pane" -p '#{window_id}')
+        tmux select-layout -t "$master_window" tiled 2>/dev/null || true
+    fi
+
+    # Record in panes.txt
+    echo "${name}:${pane_id}" >> "$panes_file"
+
+    # Re-select master pane
+    [ -n "$master_pane" ] && tmux select-pane -t "$master_pane" 2>/dev/null || true
+
+    echo "$pane_id"
+
+) 200>"${swarm_dir}/.panes.lock"
+
+# Wait for the sub-session to be ready (Stop hook fires "ready" signal after initial prompt)
+if $wait_boot; then
+    ready_channel="swarm-${id}-${name}-ready"
+    ready_timeout=60
+    timeout "$ready_timeout" tmux wait-for "$ready_channel" 2>/dev/null
+    rc=$?
+    if [ $rc -eq 124 ]; then
+        echo "WARNING: Timed out waiting for ${name} to be ready (${ready_timeout}s)" >&2
+    fi
+fi

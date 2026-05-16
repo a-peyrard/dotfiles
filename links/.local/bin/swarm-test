@@ -1,0 +1,990 @@
+#!/bin/bash
+# swarm-test — integration tests for swarm inter-session communication
+#
+# Usage: swarm-test              Run all scenarios
+#        swarm-test <name>       Run a specific scenario
+#        swarm-test --list       List available scenarios
+#
+# Each scenario is a function named scenario_<name>.
+# Scenarios run in isolated tmux sessions and clean up after themselves.
+#
+# Prerequisites: swarm-spawn, swarm-send, swarm-respond, swarm-wait,
+#                swarm-close, swarm-list must be in PATH.
+
+set -euo pipefail
+
+# ============================================================================
+# Test framework
+# ============================================================================
+
+PASSED=0
+FAILED=0
+ERRORS=""
+
+pass() { PASSED=$((PASSED + 1)); echo "  ✓ $1"; }
+fail() { FAILED=$((FAILED + 1)); ERRORS="${ERRORS}\n  ✗ $1"; echo "  ✗ $1"; }
+check() {
+    local desc="$1"; shift
+    if eval "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi
+}
+
+wait_for() {
+    local desc="$1" cmd="$2" max="${3:-20}" interval="${4:-0.3}"
+    local attempts=0
+    while [ $attempts -lt $max ]; do
+        if eval "$cmd" >/dev/null 2>&1; then return 0; fi
+        sleep "$interval"
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+TEST_SESSION="swarm-test-$$"
+TEST_SWARM_ID="test-$$"
+SWARM_DIR="/tmp/swarm/${TEST_SWARM_ID}"
+
+setup_test_session() {
+    tmux new-session -d -s "$TEST_SESSION" -x 120 -y 30
+    rm -rf "$SWARM_DIR"
+}
+
+teardown_test_session() {
+    tmux kill-session -t "$TEST_SESSION" 2>/dev/null || true
+    rm -rf "$SWARM_DIR"
+}
+
+create_test_window() {
+    local name="$1"
+    tmux new-window -t "$TEST_SESSION" -P -F '#{window_id}' -n "swarm-test-${name}"
+}
+
+get_pane() {
+    tmux list-panes -t "$1" -F '#{pane_id}' | head -1
+}
+
+kill_test_window() {
+    tmux kill-window -t "$1" 2>/dev/null || true
+}
+
+# ============================================================================
+# Prerequisite: verify tmux wait-for works
+# ============================================================================
+
+scenario_tmux_wait_for() {
+    echo "Scenario: tmux wait-for basics work"
+
+    local channel="swarm-test-waitfor-$$"
+
+    # Signal before wait (should not block)
+    tmux wait-for -S "$channel"
+    check "wait-for -S succeeds" 'true'
+
+    # Blocked wait with timeout (should succeed since already signaled)
+    # Note: wait-for on an already-signaled channel returns immediately
+    # Actually, tmux wait-for doesn't remember signals — it's a one-shot
+    # So let's test with background signal
+    local channel2="swarm-test-waitfor2-$$"
+    (sleep 0.5 && tmux wait-for -S "$channel2") &
+    local bg_pid=$!
+    timeout 5 tmux wait-for "$channel2"
+    local rc=$?
+    wait $bg_pid 2>/dev/null || true
+    check "wait-for blocks until signaled" '[ $rc -eq 0 ]'
+
+    # Timeout case
+    local channel3="swarm-test-waitfor3-$$"
+    local rc2=0
+    timeout 1 tmux wait-for "$channel3" 2>/dev/null || rc2=$?
+    check "wait-for times out with exit 124" '[ "$rc2" -eq 124 ]'
+}
+
+# ============================================================================
+# Lifecycle: spawn + close
+# ============================================================================
+
+scenario_spawn_creates_dir() {
+    echo "Scenario: swarm-spawn creates swarm directory and panes.txt"
+
+    local win pane
+
+    win=$(create_test_window "spawn-dir")
+    pane=$(get_pane "$win")
+
+    # Spawn a simple shell (not claude) to test the plumbing
+    # For now we just test that the directory and panes.txt are created
+    swarm-spawn --id "$TEST_SWARM_ID" --name "worker-1" --target "$pane" --prompt "echo hello"
+
+    check "Swarm dir created" '[ -d "$SWARM_DIR" ]'
+    check "panes.txt exists" '[ -f "$SWARM_DIR/panes.txt" ]'
+    check "meta.txt exists" '[ -f "$SWARM_DIR/meta.txt" ]'
+    check "panes.txt has worker-1" 'grep -q "worker-1:" "$SWARM_DIR/panes.txt"'
+    check "meta.txt has master_pane" 'grep -q "master_pane=" "$SWARM_DIR/meta.txt"'
+
+    kill_test_window "$win"
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_spawn_duplicate_name() {
+    echo "Scenario: swarm-spawn fails on duplicate name"
+
+    local win1 win2 pane1 pane2
+
+    win1=$(create_test_window "dup1")
+    win2=$(create_test_window "dup2")
+    pane1=$(get_pane "$win1")
+    pane2=$(get_pane "$win2")
+
+    swarm-spawn --id "$TEST_SWARM_ID" --name "dup-test" --target "$pane1" --prompt "echo first"
+
+    # Second spawn with same name should fail
+    local rc=0
+    swarm-spawn --id "$TEST_SWARM_ID" --name "dup-test" --target "$pane2" --prompt "echo second" 2>/dev/null || rc=$?
+    check "Duplicate name fails" '[ $rc -ne 0 ]'
+
+    kill_test_window "$win1"
+    kill_test_window "$win2"
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_spawn_pane_mode() {
+    echo "Scenario: swarm-spawn default pane mode splits current window"
+
+    local win pane pane_count_before pane_count_after
+
+    win=$(create_test_window "pane-mode")
+    pane=$(get_pane "$win")
+
+    pane_count_before=$(tmux list-panes -t "$win" -F '#{pane_id}' | wc -l)
+
+    # Spawn from within the test window's context
+    TMUX_PANE="$pane" swarm-spawn --id "$TEST_SWARM_ID" --name "split-test" --prompt "echo split"
+
+    sleep 0.5
+    pane_count_after=$(tmux list-panes -t "$win" -F '#{pane_id}' | wc -l)
+
+    check "New pane created" '[ "$pane_count_after" -gt "$pane_count_before" ]'
+    check "panes.txt has split-test" 'grep -q "split-test:" "$SWARM_DIR/panes.txt"'
+
+    kill_test_window "$win"
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_spawn_window_new() {
+    echo "Scenario: swarm-spawn --window N creates a new window"
+
+    local win_idx=99
+
+    # Make sure window 99 doesn't exist
+    tmux kill-window -t "${TEST_SESSION}:${win_idx}" 2>/dev/null || true
+
+    local master_win=$(create_test_window "win-master")
+    local master_pane=$(get_pane "$master_win")
+
+    TMUX_PANE="$master_pane" swarm-spawn --id "$TEST_SWARM_ID" --name "win-test" --window "$win_idx" --prompt "echo window-mode"
+    sleep 0.5
+
+    check "Window $win_idx created" 'tmux list-windows -t "$TEST_SESSION" -F "#{window_index}" | grep -q "^${win_idx}$"'
+    check "panes.txt has win-test" 'grep -q "win-test:" "$SWARM_DIR/panes.txt"'
+
+    tmux kill-window -t "${TEST_SESSION}:${win_idx}" 2>/dev/null || true
+    kill_test_window "$master_win"
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_spawn_window_existing() {
+    echo "Scenario: swarm-spawn --window N splits into existing window"
+
+    local win_idx=98
+
+    # Create window first (simulating compv3 daemon setup)
+    tmux new-window -t "${TEST_SESSION}:${win_idx}" -n "daemon" "sleep 300"
+    sleep 0.3
+    local pane_count_before=$(tmux list-panes -t "${TEST_SESSION}:${win_idx}" -F '#{pane_id}' | wc -l)
+
+    local master_win=$(create_test_window "win-exist-master")
+    local master_pane=$(get_pane "$master_win")
+
+    TMUX_PANE="$master_pane" swarm-spawn --id "$TEST_SWARM_ID" --name "into-existing" --window "$win_idx" --prompt "echo joined"
+    sleep 0.5
+
+    local pane_count_after=$(tmux list-panes -t "${TEST_SESSION}:${win_idx}" -F '#{pane_id}' | wc -l)
+
+    check "Split into existing window" '[ "$pane_count_after" -gt "$pane_count_before" ]'
+    check "panes.txt has into-existing" 'grep -q "into-existing:" "$SWARM_DIR/panes.txt"'
+
+    tmux kill-window -t "${TEST_SESSION}:${win_idx}" 2>/dev/null || true
+    kill_test_window "$master_win"
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_close_graceful() {
+    echo "Scenario: swarm-close sends /exit and cleans up"
+
+    local win pane
+
+    win=$(create_test_window "close-test")
+    pane=$(get_pane "$win")
+
+    # Start a shell that we can close
+    swarm-spawn --id "$TEST_SWARM_ID" --name "closeme" --target "$pane" --prompt "echo ready"
+    sleep 0.5
+
+    check "Pane alive before close" 'tmux list-panes -a -F "#{pane_id}" | grep -q "^${pane}$"'
+
+    swarm-close --id "$TEST_SWARM_ID" --name "closeme" --kill
+
+    sleep 0.5
+    check "Pane gone after close" '! tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -q "^${pane}$"'
+
+    kill_test_window "$win" 2>/dev/null || true
+    rm -rf "$SWARM_DIR"
+}
+
+# ============================================================================
+# Communication: send + respond + wait
+# ============================================================================
+
+scenario_wait_for_signal() {
+    echo "Scenario: swarm-wait blocks until swarm-respond signals"
+
+    mkdir -p "$SWARM_DIR"
+    local response_file="$SWARM_DIR/response-signaler.md"
+
+    # Master waits in background
+    (
+        export SWARM_DIR
+        swarm-wait --id "$TEST_SWARM_ID" --name "signaler" --timeout 10
+    ) &
+    local wait_pid=$!
+    sleep 0.5
+
+    # Sub writes response and signals
+    echo "This is the response content" > "$response_file"
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="signaler" swarm-respond "$response_file"
+
+    # Master should unblock
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "swarm-wait exits 0 on signal" '[ $rc -eq 0 ]'
+    check "Response file exists" '[ -f "$response_file" ]'
+    check "Response content correct" 'grep -q "response content" "$response_file"'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_wait_timeout() {
+    echo "Scenario: swarm-wait exits 2 on timeout"
+
+    mkdir -p "$SWARM_DIR"
+
+    local rc=0
+    swarm-wait --id "$TEST_SWARM_ID" --name "ghost" --timeout 2 2>/dev/null || rc=$?
+
+    check "swarm-wait exits 2 on timeout" '[ $rc -eq 2 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_wait_error_file() {
+    echo "Scenario: swarm-wait exits 1 when error file exists"
+
+    mkdir -p "$SWARM_DIR"
+
+    # Simulate a crashed sub-session: error file + signal
+    echo "Sub crashed" > "$SWARM_DIR/error-crashed.md"
+    (sleep 0.3 && tmux wait-for -S "swarm-${TEST_SWARM_ID}-crashed-done") &
+
+    local rc=0
+    swarm-wait --id "$TEST_SWARM_ID" --name "crashed" --timeout 5 2>/dev/null || rc=$?
+
+    check "swarm-wait exits 1 on error" '[ $rc -eq 1 ]'
+    check "Error file content" 'grep -q "crashed" "$SWARM_DIR/error-crashed.md"'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_respond_signals() {
+    echo "Scenario: swarm-respond writes signal dedup file and fires wait-for"
+
+    mkdir -p "$SWARM_DIR"
+    local response_file="$SWARM_DIR/response-test-sub.md"
+    echo "test response" > "$response_file"
+
+    # Set up a waiter
+    (timeout 5 tmux wait-for "swarm-${TEST_SWARM_ID}-test-sub-done") &
+    local wait_pid=$!
+    sleep 0.3
+
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="test-sub" swarm-respond "$response_file"
+
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "wait-for unblocked by swarm-respond" '[ $rc -eq 0 ]'
+    check "Dedup file created" '[ -f "$SWARM_DIR/.signaled-test-sub" ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_respond_missing_file() {
+    echo "Scenario: swarm-respond fails if response file missing"
+
+    mkdir -p "$SWARM_DIR"
+
+    local rc=0
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="nofile" swarm-respond "/tmp/nonexistent-file.md" 2>/dev/null || rc=$?
+
+    check "swarm-respond fails on missing file" '[ $rc -ne 0 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+# ============================================================================
+# Concurrency
+# ============================================================================
+
+scenario_concurrent_spawn() {
+    echo "Scenario: concurrent spawns don't corrupt panes.txt"
+
+    local wins=()
+    local panes=()
+    for i in 1 2 3 4; do
+        wins+=("$(create_test_window "conc-$i")")
+        panes+=("$(get_pane "${wins[-1]}")")
+    done
+
+    # Spawn all 4 concurrently
+    for i in 0 1 2 3; do
+        swarm-spawn --id "$TEST_SWARM_ID" --name "conc-$((i+1))" --target "${panes[$i]}" --prompt "echo $i" &
+    done
+    wait
+
+    local line_count
+    line_count=$(wc -l < "$SWARM_DIR/panes.txt")
+    check "panes.txt has 4 entries" '[ "$line_count" -eq 4 ]'
+
+    # Check all 4 names present
+    for i in 1 2 3 4; do
+        check "panes.txt has conc-$i" "grep -q 'conc-$i:' '$SWARM_DIR/panes.txt'"
+    done
+
+    for win in "${wins[@]}"; do
+        kill_test_window "$win"
+    done
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_signal_dedup() {
+    echo "Scenario: double signal is safe (swarm-respond + SessionEnd hook pattern)"
+
+    mkdir -p "$SWARM_DIR"
+    local response_file="$SWARM_DIR/response-dedup.md"
+    echo "response" > "$response_file"
+
+    # Set up a waiter
+    (timeout 5 tmux wait-for "swarm-${TEST_SWARM_ID}-dedup-done") &
+    local wait_pid=$!
+    sleep 0.3
+
+    # First signal (swarm-respond)
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="dedup" swarm-respond "$response_file"
+    wait $wait_pid 2>/dev/null
+    check "First signal unblocks" 'true'
+
+    # Second signal (simulating SessionEnd hook) — should not error
+    local rc=0
+    tmux wait-for -S "swarm-${TEST_SWARM_ID}-dedup-done" 2>/dev/null || rc=$?
+    check "Double signal doesn't error" '[ $rc -eq 0 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+# ============================================================================
+# List
+# ============================================================================
+
+scenario_poll_files() {
+    echo "Scenario: swarm-poll waits for files"
+
+    mkdir -p "$SWARM_DIR"
+
+    # Write one file immediately, delay the second
+    echo "first" > "$SWARM_DIR/response-a.md"
+    (sleep 2 && echo "second" > "$SWARM_DIR/response-b.md") &
+
+    local rc=0
+    local output
+    output=$(swarm-poll --id "$TEST_SWARM_ID" --interval 1 --timeout 10 response-a.md response-b.md 2>&1) || rc=$?
+
+    check "swarm-poll exits 0" '[ $rc -eq 0 ]'
+    check "Reports ALL_DONE" 'echo "$output" | grep -q "ALL_DONE"'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_poll_timeout() {
+    echo "Scenario: swarm-poll times out"
+
+    mkdir -p "$SWARM_DIR"
+
+    local rc=0
+    swarm-poll --id "$TEST_SWARM_ID" --interval 1 --timeout 2 nonexistent.md 2>/dev/null || rc=$?
+
+    check "swarm-poll exits 1 on timeout" '[ $rc -eq 1 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_poll_any_mode() {
+    echo "Scenario: swarm-poll --any exits on first file"
+
+    mkdir -p "$SWARM_DIR"
+    echo "first" > "$SWARM_DIR/fast.md"
+
+    local rc=0
+    local output
+    output=$(swarm-poll --id "$TEST_SWARM_ID" --interval 1 --timeout 5 --any fast.md slow.md 2>&1) || rc=$?
+
+    check "swarm-poll --any exits 0" '[ $rc -eq 0 ]'
+    check "Reports ANY_DONE" 'echo "$output" | grep -q "ANY_DONE"'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_hook_session_end() {
+    echo "Scenario: swarm-hook-session-end signals on crash (no response)"
+
+    mkdir -p "$SWARM_DIR"
+    local channel="swarm-${TEST_SWARM_ID}-crashed-sub-done"
+
+    # Start waiting in background
+    (timeout 5 tmux wait-for "$channel") &
+    local wait_pid=$!
+    sleep 0.3
+
+    # Simulate SessionEnd hook firing for a crashed sub-session
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="crashed-sub" bash ~/.local/bin/swarm-hook-session-end < /dev/null
+
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "Hook unblocks waiter" '[ $rc -eq 0 ]'
+    check "Error file written" '[ -f "$SWARM_DIR/error-crashed-sub.md" ]'
+    check "Signaled flag created" '[ -f "$SWARM_DIR/.signaled-crashed-sub" ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_hook_safety_net() {
+    echo "Scenario: swarm-hook-session-end signals when response exists but swarm-respond missed"
+
+    mkdir -p "$SWARM_DIR"
+    local channel="swarm-${TEST_SWARM_ID}-forgot-sub-done"
+
+    # Sub wrote response but forgot to call swarm-respond
+    echo "response content" > "$SWARM_DIR/response-forgot-sub.md"
+
+    # Start waiting in background
+    (timeout 5 tmux wait-for "$channel") &
+    local wait_pid=$!
+    sleep 0.3
+
+    # Simulate SessionEnd hook
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="forgot-sub" bash ~/.local/bin/swarm-hook-session-end < /dev/null
+
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "Hook signals for existing response" '[ $rc -eq 0 ]'
+    check "No error file (response exists)" '[ ! -f "$SWARM_DIR/error-forgot-sub.md" ]'
+    check "Signaled flag created" '[ -f "$SWARM_DIR/.signaled-forgot-sub" ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_hook_noop_if_signaled() {
+    echo "Scenario: swarm-hook-session-end no-op if already signaled"
+
+    mkdir -p "$SWARM_DIR"
+
+    # Already signaled (by swarm-respond)
+    touch "$SWARM_DIR/.signaled-done-sub"
+
+    # Hook should exit immediately (no signal, no error file)
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="done-sub" bash ~/.local/bin/swarm-hook-session-end < /dev/null
+    local rc=$?
+
+    check "Hook exits 0 (no-op)" '[ $rc -eq 0 ]'
+    check "No error file created" '[ ! -f "$SWARM_DIR/error-done-sub.md" ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_claude_inject_basic() {
+    echo "Scenario: claude-inject pastes content into a pane"
+
+    local win pane tmpfile="/tmp/swarm-test-inject-$$.txt"
+    echo "injected content" > "$tmpfile"
+
+    win=$(create_test_window "inject")
+    pane=$(get_pane "$win")
+
+    # Give the shell a moment to start
+    sleep 0.5
+
+    claude-inject "$pane" "$tmpfile"
+    sleep 0.5
+
+    # Capture what was pasted into the pane
+    local captured
+    captured=$(tmux capture-pane -t "$pane" -p 2>/dev/null | head -5)
+
+    check "Content injected into pane" 'echo "$captured" | grep -q "injected content"'
+
+    rm -f "$tmpfile"
+    kill_test_window "$win"
+}
+
+scenario_claude_inject_no_submit() {
+    echo "Scenario: claude-inject --no-submit pastes without pressing enter"
+
+    local win pane tmpfile="/tmp/swarm-test-nosub-$$.txt"
+    echo "no submit test" > "$tmpfile"
+
+    win=$(create_test_window "nosub")
+    pane=$(get_pane "$win")
+    sleep 0.5
+
+    claude-inject "$pane" "$tmpfile" --no-submit
+    sleep 0.5
+
+    # The text should be in the pane but not executed
+    local captured
+    captured=$(tmux capture-pane -t "$pane" -p 2>/dev/null)
+
+    check "Content visible in pane" 'echo "$captured" | grep -q "no submit test"'
+
+    rm -f "$tmpfile"
+    kill_test_window "$win"
+}
+
+scenario_claude_inject_missing_file() {
+    echo "Scenario: claude-inject fails on missing file"
+
+    local rc=0
+    claude-inject "%999" "/tmp/nonexistent-$$" 2>/dev/null || rc=$?
+
+    check "Fails on missing file" '[ $rc -ne 0 ]'
+}
+
+scenario_ready_handshake() {
+    echo "Scenario: Stop hook signals ready after initial prompt"
+
+    mkdir -p "$SWARM_DIR"
+    local channel="swarm-${TEST_SWARM_ID}-handshake-ready"
+
+    # Simulate: master waits for ready, Stop hook fires it
+    (timeout 5 tmux wait-for "$channel") &
+    local wait_pid=$!
+    sleep 0.3
+
+    # Simulate Stop hook firing for a swarm sub-session
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="handshake" bash ~/.local/bin/swarm-hook-stop < /dev/null
+
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "Ready signal unblocks master" '[ $rc -eq 0 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_ready_idempotent() {
+    echo "Scenario: Multiple Stop hook fires don't cause issues"
+
+    mkdir -p "$SWARM_DIR"
+    local channel="swarm-${TEST_SWARM_ID}-multi-ready"
+
+    # First signal (consumed by wait)
+    (timeout 5 tmux wait-for "$channel") &
+    local wait_pid=$!
+    sleep 0.3
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="multi" bash ~/.local/bin/swarm-hook-stop < /dev/null
+    wait $wait_pid 2>/dev/null
+    check "First signal consumed" '[ $? -eq 0 ]'
+
+    # Second signal (no one listening — should not error)
+    local rc=0
+    SWARM_ID="$TEST_SWARM_ID" SWARM_NAME="multi" bash ~/.local/bin/swarm-hook-stop < /dev/null || rc=$?
+    check "Second signal is harmless" '[ $rc -eq 0 ]'
+
+    rm -rf "$SWARM_DIR"
+}
+
+scenario_ready_no_swarm() {
+    echo "Scenario: Stop hook is no-op for non-swarm sessions"
+
+    # No SWARM_ID set — hook should exit silently
+    local rc=0
+    SWARM_ID="" SWARM_NAME="" bash ~/.local/bin/swarm-hook-stop < /dev/null || rc=$?
+    check "No-op without SWARM_ID" '[ $rc -eq 0 ]'
+}
+
+scenario_live_debate_flow() {
+    echo "Scenario: debate flow — spawn 2 reviewers, get verdicts, close"
+
+    local did="debate-test-$$"
+    local swarm_dir="/tmp/swarm/${did}"
+    mkdir -p "$swarm_dir"
+
+    # Write a minimal plan
+    echo "# Test Plan" > "$swarm_dir/plan-v1.md"
+    echo "Use bash for everything." >> "$swarm_dir/plan-v1.md"
+
+    # Write round 1 prompts for 2 reviewers
+    for persona in ai-justin grumpy; do
+        cat > "$swarm_dir/prompt-round-1-${persona}.txt" << PROMPT
+# Quick Review
+Review this plan in 2 sentences. Include VERDICT: GREEN or VERDICT: YELLOW at the end.
+Write your response to ${swarm_dir}/round-1-${persona}.md
+Then run: swarm-respond ${swarm_dir}/round-1-${persona}.md
+
+## Plan
+$(cat "$swarm_dir/plan-v1.md")
+PROMPT
+    done
+
+    # Phase 1: Spawn reviewers in parallel (no --wait-boot)
+    local pane1 pane2
+    pane1=$(swarm-spawn --id "$did" --name "ai-justin" --cwd "$HOME/gdrive" \
+        --prompt-file "$swarm_dir/prompt-round-1-ai-justin.txt")
+    pane2=$(swarm-spawn --id "$did" --name "grumpy" --cwd "$HOME/gdrive" \
+        --prompt-file "$swarm_dir/prompt-round-1-grumpy.txt")
+
+    check "Reviewer 1 spawned" '[ -n "$pane1" ]'
+    check "Reviewer 2 spawned" '[ -n "$pane2" ]'
+
+    # Phase 2: Wait for both to respond via swarm-poll (file-based, no signal dependency)
+    # swarm-poll checks file existence — more reliable than swarm-wait for this test
+    # because the signal timing with parallel sessions + test framework is tricky
+    swarm-poll --id "$did" --timeout 120 round-1-ai-justin.md round-1-grumpy.md 2>/dev/null
+    local poll_rc=$?
+
+    local rc1=0 rc2=0
+    [ ! -f "$swarm_dir/round-1-ai-justin.md" ] && rc1=1
+    [ ! -f "$swarm_dir/round-1-grumpy.md" ] && rc2=1
+
+    check "ai-justin responded" '[ $rc1 -eq 0 ]'
+    check "grumpy responded" '[ $rc2 -eq 0 ]'
+    check "ai-justin response file exists" '[ -f "$swarm_dir/round-1-ai-justin.md" ]'
+    check "grumpy response file exists" '[ -f "$swarm_dir/round-1-grumpy.md" ]'
+
+    # Extract verdicts
+    local verdicts
+    verdicts=$(debate-verdicts "$did" 1 ai-justin grumpy 2>/dev/null)
+    check "Verdicts extracted" '[ -n "$verdicts" ]'
+    check "ai-justin has verdict" 'echo "$verdicts" | grep -q "ai-justin"'
+    check "grumpy has verdict" 'echo "$verdicts" | grep -q "grumpy"'
+    check "No NONE verdicts" '! echo "$verdicts" | grep -q "NONE"'
+
+    echo "  Verdicts: $(echo "$verdicts" | tr '\n' ' ')"
+
+    # Close
+    swarm-close --id "$did" --kill --cleanup 2>/dev/null
+    check "Panes cleaned up" '! tmux list-panes -a -F "#{pane_id}" 2>/dev/null | grep -qE "^(${pane1}|${pane2})$"'
+}
+
+scenario_live_handshake() {
+    echo "Scenario: live handshake with real Claude session"
+
+    local swarm_id="live-handshake-$$"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    mkdir -p "$swarm_dir"
+
+    cat > "$swarm_dir/prompt-boot.txt" << PROMPT
+You are a test sub-session. Your task:
+1. Write "handshake successful" to ${swarm_dir}/response-boot.md
+2. Run: swarm-respond ${swarm_dir}/response-boot.md
+3. Then wait for further instructions.
+PROMPT
+
+    local time_start=$SECONDS
+    local pane
+    pane=$(swarm-spawn --id "$swarm_id" --name "boot" --cwd "$HOME/gdrive" \
+        --prompt-file "$swarm_dir/prompt-boot.txt" --wait-boot)
+    local boot_time=$((SECONDS - time_start))
+
+    check "Handshake completed (pane returned)" '[ -n "$pane" ]'
+    check "Boot time < 60s (not timeout)" '[ $boot_time -lt 60 ]'
+    check "Pane is alive" 'tmux list-panes -a -F "#{pane_id}" | grep -q "^${pane}$"'
+
+    swarm-wait --id "$swarm_id" --name "boot" --timeout 30 2>/dev/null
+    local rc=$?
+
+    check "Response received" '[ $rc -eq 0 ]'
+    check "Response content correct" 'grep -q "handshake" "$swarm_dir/response-boot.md" 2>/dev/null'
+
+    echo "  (boot took ${boot_time}s)"
+    swarm-close --id "$swarm_id" --kill --cleanup 2>/dev/null
+}
+
+scenario_live_ping_pong() {
+    echo "Scenario: live 3-round ping pong between sessions"
+
+    local swarm_id="live-pp-$$"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    mkdir -p "$swarm_dir"
+
+    cat > "$swarm_dir/prompt-player.txt" << PROMPT
+Counting game. Receive number, add 1, respond. Game ends at 6.
+For each round: write ONLY the number to ${swarm_dir}/response-player.md, then run: swarm-respond ${swarm_dir}/response-player.md
+If number >= 5, write "GAME OVER" instead. No explanation.
+The first number is: 1
+PROMPT
+
+    local pane
+    pane=$(swarm-spawn --id "$swarm_id" --name "player" --cwd "$HOME/gdrive" \
+        --prompt-file "$swarm_dir/prompt-player.txt" --wait-boot 2>/dev/null)
+
+    check "Player spawned" '[ -n "$pane" ]'
+
+    # Round 1: baked into initial prompt
+    swarm-wait --id "$swarm_id" --name "player" --timeout 60 2>/dev/null
+    local r1=$(cat "$swarm_dir/response-player.md" 2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//')
+    local r1_num=$(echo "$r1" | grep -oE '[0-9]+' | head -1)
+    check "Round 1: received 2" '[ "$r1_num" = "2" ]'
+
+    # Round 2
+    rm -f "$swarm_dir/response-player.md" "$swarm_dir/.signaled-player"
+    echo "3" > /tmp/swarm-pp-$$.txt
+    swarm-send /tmp/swarm-pp-$$.txt --id "$swarm_id" --name "player" 2>/dev/null
+    rm -f /tmp/swarm-pp-$$.txt
+    swarm-wait --id "$swarm_id" --name "player" --timeout 60 2>/dev/null
+    local r2=$(cat "$swarm_dir/response-player.md" 2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//')
+    local r2_num=$(echo "$r2" | grep -oE '[0-9]+' | head -1)
+    check "Round 2: received 4" '[ "$r2_num" = "4" ]'
+
+    # Round 3
+    rm -f "$swarm_dir/response-player.md" "$swarm_dir/.signaled-player"
+    echo "5" > /tmp/swarm-pp-$$.txt
+    swarm-send /tmp/swarm-pp-$$.txt --id "$swarm_id" --name "player" 2>/dev/null
+    rm -f /tmp/swarm-pp-$$.txt
+    swarm-wait --id "$swarm_id" --name "player" --timeout 60 2>/dev/null
+    local r3=$(cat "$swarm_dir/response-player.md" 2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//')
+    check "Round 3: game over" 'echo "$r3" | grep -qi "game over"'
+
+    swarm-close --id "$swarm_id" --kill --cleanup 2>/dev/null
+}
+
+scenario_end_to_end_delegate() {
+    echo "Scenario: end-to-end delegate flow (respond → wait signal chain)"
+
+    local swarm_id="e2e-$$"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    mkdir -p "$swarm_dir"
+
+    local response_file="$swarm_dir/response-worker.md"
+
+    # Simulate the full flow without an actual Claude session:
+    # 1. Master starts waiting in background
+    (swarm-wait --id "$swarm_id" --name "worker" --timeout 10) &
+    local wait_pid=$!
+    sleep 0.5
+
+    # 2. Sub-session writes response and signals (simulating what Claude would do)
+    echo "task completed successfully" > "$response_file"
+    SWARM_ID="$swarm_id" SWARM_NAME="worker" swarm-respond "$response_file"
+
+    # 3. Master should unblock
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+
+    check "swarm-wait returns 0" '[ $rc -eq 0 ]'
+    check "Response file created" '[ -f "$response_file" ]'
+    check "Response content correct" 'grep -q "task completed" "$response_file"'
+    check "Signal dedup file exists" '[ -f "$swarm_dir/.signaled-worker" ]'
+
+    rm -rf "$swarm_dir"
+}
+
+scenario_followup_round() {
+    echo "Scenario: follow-up round (re-send after first response)"
+
+    local swarm_id="followup-$$"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    mkdir -p "$swarm_dir"
+
+    local response_file="$swarm_dir/response-worker.md"
+
+    # Round 1: respond and wait
+    (swarm-wait --id "$swarm_id" --name "worker" --timeout 10) &
+    local wait_pid=$!
+    sleep 0.5
+
+    echo "round 1 done" > "$response_file"
+    SWARM_ID="$swarm_id" SWARM_NAME="worker" swarm-respond "$response_file"
+    wait $wait_pid 2>/dev/null
+    local rc=$?
+    check "Round 1 wait succeeds" '[ $rc -eq 0 ]'
+    check "Round 1 dedup flag exists" '[ -f "$swarm_dir/.signaled-worker" ]'
+
+    # Simulate swarm-send clearing the dedup flag (as it now does)
+    rm -f "$swarm_dir/.signaled-worker"
+
+    # Round 2: respond and wait again on same channel
+    (swarm-wait --id "$swarm_id" --name "worker" --timeout 10) &
+    wait_pid=$!
+    sleep 0.5
+
+    echo "round 2 done" > "$response_file"
+    SWARM_ID="$swarm_id" SWARM_NAME="worker" swarm-respond "$response_file"
+    wait $wait_pid 2>/dev/null
+    rc=$?
+    check "Round 2 wait succeeds" '[ $rc -eq 0 ]'
+    check "Round 2 response updated" 'grep -q "round 2" "$response_file"'
+    check "Round 2 dedup flag recreated" '[ -f "$swarm_dir/.signaled-worker" ]'
+
+    rm -rf "$swarm_dir"
+}
+
+scenario_followup_without_reset() {
+    echo "Scenario: follow-up fails without dedup reset"
+
+    local swarm_id="no-reset-$$"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    mkdir -p "$swarm_dir"
+
+    local response_file="$swarm_dir/response-worker.md"
+
+    # Round 1
+    echo "round 1" > "$response_file"
+    SWARM_ID="$swarm_id" SWARM_NAME="worker" swarm-respond "$response_file"
+
+    # Don't clear dedup flag — simulates the bug
+    # swarm-respond still fires the signal, but SessionEnd hook would be blocked
+    check "Dedup flag blocks hook" '[ -f "$swarm_dir/.signaled-worker" ]'
+
+    # Verify swarm-respond itself still fires (it doesn't check dedup)
+    (timeout 3 tmux wait-for "swarm-${swarm_id}-worker-done" 2>/dev/null) &
+    local wait_pid=$!
+    sleep 0.3
+    SWARM_ID="$swarm_id" SWARM_NAME="worker" swarm-respond "$response_file"
+    wait $wait_pid 2>/dev/null
+    rc=$?
+    check "swarm-respond still signals even with dedup flag" '[ $rc -eq 0 ]'
+
+    rm -rf "$swarm_dir"
+}
+
+scenario_list() {
+    echo "Scenario: swarm-list shows swarm status"
+
+    mkdir -p "$SWARM_DIR"
+    echo "worker-a:%100" > "$SWARM_DIR/panes.txt"
+    echo "worker-b:%101" >> "$SWARM_DIR/panes.txt"
+
+    local output
+    output=$(swarm-list --id "$TEST_SWARM_ID" 2>/dev/null || echo "")
+    check "swarm-list output not empty" '[ -n "$output" ]'
+    check "swarm-list mentions test swarm" 'echo "$output" | grep -q "$TEST_SWARM_ID"'
+
+    rm -rf "$SWARM_DIR"
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+
+list_scenarios() {
+    echo "Available scenarios:"
+    declare -F | awk '/scenario_/ {sub(/.*scenario_/, "  "); print}'
+}
+
+run_scenario() {
+    local name="$1"
+    local func="scenario_${name}"
+    if declare -f "$func" >/dev/null 2>&1; then
+        echo ""
+        $func
+    else
+        echo "Unknown scenario: $name" >&2
+        list_scenarios >&2
+        exit 1
+    fi
+}
+
+# Main
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: swarm-test              Run all scenarios"
+    echo "       swarm-test <name>       Run a specific scenario"
+    echo "       swarm-test --list       List available scenarios"
+    echo ""
+    echo "Integration tests for swarm inter-session communication."
+    echo "Tests spawn, close, signal, wait, poll, hooks, and live flows."
+    echo ""
+    echo "Live tests (real Claude sessions) require: SWARM_TEST_LIVE=1"
+    echo "Prerequisites: swarm-spawn, swarm-send, swarm-respond, swarm-wait,"
+    echo "               swarm-close, swarm-list in PATH."
+    exit 0
+fi
+
+echo "swarm integration tests"
+echo "======================="
+
+if [ "${1:-}" = "--list" ]; then
+    list_scenarios
+    exit 0
+fi
+
+setup_test_session
+trap teardown_test_session EXIT
+
+if [ -n "${1:-}" ]; then
+    run_scenario "$1"
+else
+    run_scenario "tmux_wait_for"
+    run_scenario "spawn_creates_dir"
+    run_scenario "spawn_duplicate_name"
+    run_scenario "spawn_pane_mode"
+    run_scenario "spawn_window_new"
+    run_scenario "spawn_window_existing"
+    run_scenario "close_graceful"
+    run_scenario "wait_for_signal"
+    run_scenario "wait_timeout"
+    run_scenario "wait_error_file"
+    run_scenario "respond_signals"
+    run_scenario "respond_missing_file"
+    run_scenario "concurrent_spawn"
+    run_scenario "signal_dedup"
+    run_scenario "poll_files"
+    run_scenario "poll_timeout"
+    run_scenario "poll_any_mode"
+    run_scenario "hook_session_end"
+    run_scenario "hook_safety_net"
+    run_scenario "hook_noop_if_signaled"
+    run_scenario "ready_handshake"
+    run_scenario "ready_idempotent"
+    run_scenario "ready_no_swarm"
+    run_scenario "claude_inject_basic"
+    run_scenario "claude_inject_no_submit"
+    run_scenario "claude_inject_missing_file"
+    run_scenario "end_to_end_delegate"
+    run_scenario "followup_round"
+    run_scenario "followup_without_reset"
+    if [ "${SWARM_TEST_LIVE:-}" = "1" ]; then
+        run_scenario "live_debate_flow"
+        run_scenario "live_handshake"
+        run_scenario "live_ping_pong"
+    else
+        echo ""
+        echo "Skipping live tests (spawn real Claude sessions). Run with: SWARM_TEST_LIVE=1 swarm-test"
+    fi
+    run_scenario "list"
+fi
+
+# Results
+echo ""
+TOTAL=$((PASSED + FAILED))
+if [ $FAILED -eq 0 ]; then
+    echo "All $TOTAL tests passed ✓"
+else
+    echo "$PASSED/$TOTAL passed, $FAILED failed ✗"
+    echo -e "$ERRORS"
+fi
+exit $FAILED

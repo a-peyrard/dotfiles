@@ -1,0 +1,119 @@
+#!/bin/bash
+# swarm-poll — Wait for expected files (fallback for multi-response waits)
+#
+# Usage: swarm-poll --id <id> [--interval 3] [--timeout 300] [--any] <file1> [file2 ...]
+#
+# Files are relative to /tmp/swarm/<id>/.
+# For single-response waits, prefer swarm-wait (uses tmux wait-for, zero polling).
+#
+# Exit codes:
+#   0 = all files found (or any, with --any)
+#   1 = timeout
+#   2 = tracked pane died
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-poll --id <id> [options] <file1> [file2 ...]
+
+Wait for expected files to appear under /tmp/swarm/<id>/.
+Fallback for multi-response waits. For single-response, prefer swarm-wait.
+
+Options:
+  --interval <seconds>  Poll frequency (default: 3)
+  --timeout <seconds>   Max wait, 0=forever (default: 300)
+  --any                 Exit on first file found (default: wait for all)
+
+Exit codes:
+  0 = all files found (or any, with --any)
+  1 = timeout
+  2 = tracked pane died before its file appeared
+HELP
+    exit 0
+fi
+
+id=""
+interval=3
+timeout_secs=300
+any_mode=false
+files=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --interval) interval="$2"; shift 2 ;;
+        --timeout) timeout_secs="$2"; shift 2 ;;
+        --any) any_mode=true; shift ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *) files+=("$1"); shift ;;
+    esac
+done
+
+if [ -z "$id" ] || [ ${#files[@]} -eq 0 ]; then
+    echo "Usage: swarm-poll --id <id> [--interval N] [--timeout N] [--any] <file1> [file2 ...]" >&2
+    exit 1
+fi
+
+swarm_dir="/tmp/swarm/${id}"
+panes_file="${swarm_dir}/panes.txt"
+
+elapsed=0
+
+while true; do
+    all_done=true
+    any_done=false
+    status=""
+
+    for f in "${files[@]}"; do
+        if [ -f "${swarm_dir}/${f}" ]; then
+            status="$status ${f}=done"
+            any_done=true
+        else
+            status="$status ${f}=wait"
+            all_done=false
+        fi
+    done
+
+    if $all_done; then
+        echo "ALL_DONE at ${elapsed}s"
+        exit 0
+    fi
+
+    if $any_mode && $any_done; then
+        echo "ANY_DONE at ${elapsed}s"
+        exit 0
+    fi
+
+    if [ $elapsed -ge $timeout_secs ] && [ $timeout_secs -gt 0 ]; then
+        echo "TIMEOUT at ${elapsed}s:$status"
+        for f in "${files[@]}"; do
+            [ ! -f "${swarm_dir}/${f}" ] && echo "MISSING: $f"
+        done
+        exit 1
+    fi
+
+    # Pane liveness check
+    if [ -f "$panes_file" ]; then
+        while IFS=: read -r pname pane; do
+            [ -z "$pane" ] && continue
+            if ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+                # Check if this pane's response file is still missing
+                for f in "${files[@]}"; do
+                    if echo "$f" | grep -q "$pname" && [ ! -f "${swarm_dir}/${f}" ]; then
+                        echo "DEAD: $pname ($pane) — response file missing"
+                        exit 2
+                    fi
+                done
+            fi
+        done < "$panes_file"
+    fi
+
+    # Status output every 15 seconds
+    if [ $((elapsed % 15)) -eq 0 ] && [ $elapsed -gt 0 ]; then
+        echo "  [${elapsed}s]$status"
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+done

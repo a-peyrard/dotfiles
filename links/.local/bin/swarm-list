@@ -1,0 +1,82 @@
+#!/bin/bash
+# swarm-list — Show active swarms and sessions
+#
+# Usage: swarm-list [--id <id>] [-v]
+#
+# Scans /tmp/swarm/*/panes.txt for active swarms.
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-list [--id <id>] [-v]
+
+Show active swarms and their sessions.
+
+Options:
+  --id <string>  Filter to one swarm (default: show all)
+  -v             Verbose: pane ID, alive/dead, window number
+
+Scans /tmp/swarm/*/panes.txt for active swarms.
+HELP
+    exit 0
+fi
+
+id=""
+verbose=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        -v) verbose=true; shift ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+show_swarm() {
+    local swarm_id="$1"
+    local swarm_dir="/tmp/swarm/${swarm_id}"
+    local panes_file="${swarm_dir}/panes.txt"
+
+    [ ! -f "$panes_file" ] && return
+
+    local total=0 alive_count=0 dead_count=0
+
+    while IFS=: read -r name pane; do
+        [ -z "$pane" ] && continue
+        total=$((total + 1))
+        if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+            alive_count=$((alive_count + 1))
+        else
+            dead_count=$((dead_count + 1))
+        fi
+    done < "$panes_file"
+
+    if $verbose; then
+        local created=""
+        [ -f "${swarm_dir}/meta.txt" ] && created=$(grep '^created_at=' "${swarm_dir}/meta.txt" 2>/dev/null | cut -d= -f2-)
+        echo "${swarm_id} (${total} sessions, created ${created:-unknown})"
+
+        while IFS=: read -r name pane; do
+            [ -z "$pane" ] && continue
+            local status="dead" win_info="—"
+            if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+                status="alive"
+                win_info="window:$(tmux display-message -t "$pane" -p '#{window_index}' 2>/dev/null || echo '?')"
+            fi
+            printf "  %-16s %-8s %-8s %s\n" "$name" "$pane" "$status" "$win_info"
+        done < "$panes_file"
+    else
+        echo "${swarm_id} (${total} sessions: ${alive_count} alive, ${dead_count} dead)"
+    fi
+}
+
+if [ -n "$id" ]; then
+    show_swarm "$id"
+else
+    for dir in /tmp/swarm/*/; do
+        [ ! -d "$dir" ] && continue
+        swarm_id=$(basename "$dir")
+        show_swarm "$swarm_id"
+    done
+fi

@@ -1,0 +1,110 @@
+#!/bin/bash
+# swarm-close — Terminate sessions in a swarm
+#
+# Usage: swarm-close --id <id> [--name <name>] [--kill] [--cleanup]
+#
+# Without --name: closes all sessions in the swarm.
+# Graceful mode (default): sends /exit, waits 2s, kills survivors.
+# --kill: force-kill immediately.
+# --cleanup: also remove /tmp/swarm/<id>/ (refuses if sessions alive).
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-close --id <id> [--name <name>] [--kill] [--cleanup]
+
+Terminate sessions in a swarm.
+
+Options:
+  --name <name>   Close only this session (default: close all)
+  --kill          Force-kill immediately (default: send /exit, wait 2s, then kill)
+  --cleanup       Also remove /tmp/swarm/<id>/ (refuses if sessions still alive)
+
+Examples:
+  swarm-close --id my-swarm                    # graceful close all
+  swarm-close --id my-swarm --name worker1     # close one session
+  swarm-close --id my-swarm --kill --cleanup   # force-kill + remove files
+HELP
+    exit 0
+fi
+
+id=""
+name=""
+force_kill=false
+cleanup=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --kill) force_kill=true; shift ;;
+        --cleanup) cleanup=true; shift ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$id" ]; then
+    echo "Usage: swarm-close --id <id> [--name <name>] [--kill] [--cleanup]" >&2
+    exit 1
+fi
+
+swarm_dir="/tmp/swarm/${id}"
+panes_file="${swarm_dir}/panes.txt"
+
+if [ ! -f "$panes_file" ]; then
+    echo "No panes file found: $panes_file" >&2
+    exit 1
+fi
+
+closed=0
+alive=0
+
+while IFS=: read -r pname pane; do
+    [ -z "$pane" ] && continue
+    [ -n "$name" ] && [ "$pname" != "$name" ] && continue
+
+    if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+        if $force_kill; then
+            tmux kill-pane -t "$pane" 2>/dev/null
+            echo "  Killed $pname ($pane)"
+        else
+            tmux send-keys -t "$pane" '/exit' C-m 2>/dev/null
+            echo "  Sent /exit to $pname ($pane)"
+        fi
+        closed=$((closed + 1))
+    else
+        echo "  $pname ($pane) — already gone"
+    fi
+done < "$panes_file"
+
+if ! $force_kill && [ $closed -gt 0 ]; then
+    sleep 2
+    while IFS=: read -r pname pane; do
+        [ -z "$pane" ] && continue
+        [ -n "$name" ] && [ "$pname" != "$name" ] && continue
+        if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+            tmux kill-pane -t "$pane" 2>/dev/null
+            echo "  Force-killed $pname ($pane) (didn't exit gracefully)"
+        fi
+    done < "$panes_file"
+fi
+
+# Check if any sessions still alive (for --cleanup safety)
+while IFS=: read -r pname pane; do
+    [ -z "$pane" ] && continue
+    if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+        alive=$((alive + 1))
+    fi
+done < "$panes_file"
+
+if $cleanup; then
+    if [ $alive -gt 0 ]; then
+        echo "ERROR: $alive sessions still alive. Use --kill --cleanup to force." >&2
+        exit 1
+    fi
+    rm -rf "$swarm_dir"
+    echo "Cleaned up $swarm_dir"
+fi
+
+echo "Closed $closed sessions"

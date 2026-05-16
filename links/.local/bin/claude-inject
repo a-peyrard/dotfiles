@@ -1,0 +1,106 @@
+#!/bin/bash
+# claude-inject — Canonical text injection into a Claude Code TUI pane
+#
+# Usage: claude-inject <pane-id> <file> [--no-submit] [--wait-ready]
+#
+# The ONE place that implements: load-buffer → paste-buffer → C-m.
+# Used by swarm-send, debate-send, nvc send.
+#
+# Options:
+#   --no-submit    Paste without pressing C-m (text stays in input)
+#   --wait-ready   Check claude-state before pasting, wait until session is idle
+#
+# Named paste-buffers prevent interleaving when multiple injects run concurrently.
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: claude-inject <pane-id> <file> [--no-submit] [--wait-ready]
+
+Inject text into a Claude Code TUI pane via tmux paste-buffer.
+Canonical implementation — used by swarm-send under the hood.
+
+Options:
+  --no-submit    Paste without pressing C-m (text stays in input)
+  --wait-ready   Check claude-state before pasting, wait until session is idle
+
+Uses named paste-buffers to prevent interleaving between concurrent injects.
+HELP
+    exit 0
+fi
+
+pane=""
+file=""
+no_submit=false
+wait_ready=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --no-submit) no_submit=true ;;
+        --wait-ready) wait_ready=true ;;
+        -*)
+            echo "Unknown option: $arg" >&2
+            echo "Usage: claude-inject <pane-id> <file> [--no-submit] [--wait-ready]" >&2
+            exit 1
+            ;;
+        *)
+            if [ -z "$pane" ]; then
+                pane="$arg"
+            elif [ -z "$file" ]; then
+                file="$arg"
+            fi
+            ;;
+    esac
+done
+
+if [ -z "$pane" ] || [ -z "$file" ]; then
+    echo "Usage: claude-inject <pane-id> <file> [--no-submit] [--wait-ready]" >&2
+    exit 1
+fi
+
+if [ ! -f "$file" ]; then
+    echo "ERROR: File not found: $file" >&2
+    exit 1
+fi
+
+# Verify pane exists
+if ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -q "^${pane}$"; then
+    echo "ERROR: Pane $pane does not exist" >&2
+    exit 1
+fi
+
+# Readiness check: wait for claude-state to report "waiting" (idle)
+if $wait_ready; then
+    state_dir="$HOME/.claude-sessions/state"
+    tmux_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || echo "")
+    ready_timeout=10
+    ready_deadline=$((SECONDS + ready_timeout))
+
+    if [ -n "$tmux_pid" ]; then
+        while [ $SECONDS -lt $ready_deadline ]; do
+            state_file=$(grep -l "\"pane_id\":\"${pane}\"" "$state_dir/$tmux_pid"/*.json 2>/dev/null | head -1)
+
+            if [ -z "$state_file" ]; then
+                break  # no state file yet = session hasn't started hooks, assume ready
+            fi
+
+            status=$(python3 -c "import json; print(json.load(open('$state_file')).get('status','unknown'))" 2>/dev/null || echo "unknown")
+            case "$status" in
+                waiting|idle) break ;;  # ready for input
+                *) sleep 0.5 ;;         # working/compacting — wait
+            esac
+        done
+    fi
+fi
+
+# Inject via named paste-buffer
+buf_name="inject-$$"
+tmux load-buffer -b "$buf_name" "$file"
+tmux paste-buffer -b "$buf_name" -t "$pane"
+tmux delete-buffer -b "$buf_name" 2>/dev/null || true
+
+if ! $no_submit; then
+    sleep 0.3
+    tmux send-keys -t "$pane" C-m
+fi

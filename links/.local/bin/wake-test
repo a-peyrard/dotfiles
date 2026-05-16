@@ -1,0 +1,217 @@
+#!/bin/bash
+# wake-test — integration tests for wake command
+#
+# Usage: wake-test              Run all scenarios
+#        wake-test <name>       Run a specific scenario
+#        wake-test --list       List available scenarios
+
+set -euo pipefail
+
+# ============================================================================
+# Test framework
+# ============================================================================
+
+PASSED=0
+FAILED=0
+ERRORS=""
+
+pass() { PASSED=$((PASSED + 1)); echo "  ✓ $1"; }
+fail() { FAILED=$((FAILED + 1)); ERRORS="${ERRORS}\n  ✗ $1"; echo "  ✗ $1"; }
+check() {
+    local desc="$1"; shift
+    if eval "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi
+}
+
+# ============================================================================
+# Scenarios
+# ============================================================================
+
+scenario_help() {
+    echo "Scenario: --help works"
+
+    local out
+    out=$(wake --help 2>&1)
+    check "help mentions wake" 'echo "$out" | grep -q "wake"'
+    check "help mentions --wait" 'echo "$out" | grep -q "\-\-wait"'
+    check "help mentions --timeout" 'echo "$out" | grep -q "\-\-timeout"'
+    check "help mentions --output" 'echo "$out" | grep -q "\-\-output"'
+}
+
+scenario_explicit_channel_signal_before_wait() {
+    echo "Scenario: explicit channel — signal before wait"
+
+    local ch="wake-test-sbw-$$"
+    wake "$ch" 2>/dev/null
+    wake --wait "$ch" --timeout 2 2>/dev/null
+    check "wait returns immediately when signal queued" '[ $? -eq 0 ]'
+}
+
+scenario_explicit_channel_signal_after_wait() {
+    echo "Scenario: explicit channel — signal after wait"
+
+    local ch="wake-test-saw-$$"
+    (sleep 0.5 && wake "$ch") &
+    local bg_pid=$!
+    wake --wait "$ch" --timeout 5 2>/dev/null
+    local rc=$?
+    wait $bg_pid 2>/dev/null || true
+    check "wait unblocks after signal" '[ $rc -eq 0 ]'
+}
+
+scenario_timeout() {
+    echo "Scenario: --wait times out"
+
+    local ch="wake-test-timeout-$$"
+    local rc=0
+    wake --wait "$ch" --timeout 1 2>/dev/null || rc=$?
+    check "exit code is 2 on timeout" '[ $rc -eq 2 ]'
+}
+
+scenario_output_file() {
+    echo "Scenario: --output prints file after signal"
+
+    local ch="wake-test-output-$$"
+    local tmpfile="/tmp/wake-test-output-$$.log"
+    echo "hello from wake test" > "$tmpfile"
+
+    wake "$ch" 2>/dev/null
+    local out
+    out=$(wake --wait "$ch" --timeout 2 --output "$tmpfile" 2>/dev/null)
+    check "output contains file content" 'echo "$out" | grep -q "hello from wake test"'
+
+    rm -f "$tmpfile"
+}
+
+scenario_output_file_missing() {
+    echo "Scenario: --output with missing file errors"
+
+    local ch="wake-test-outmissing-$$"
+    wake "$ch" 2>/dev/null
+    local rc=0
+    wake --wait "$ch" --timeout 2 --output "/tmp/nonexistent-wake-$$" 2>/dev/null || rc=$?
+    check "exit code is 1 for missing output file" '[ $rc -eq 1 ]'
+}
+
+scenario_multiple_channels() {
+    echo "Scenario: multiple independent channels"
+
+    local ch1="wake-test-multi1-$$"
+    local ch2="wake-test-multi2-$$"
+
+    wake "$ch1" 2>/dev/null
+    wake "$ch2" 2>/dev/null
+
+    wake --wait "$ch1" --timeout 2 2>/dev/null
+    check "channel 1 received" '[ $? -eq 0 ]'
+
+    wake --wait "$ch2" --timeout 2 2>/dev/null
+    check "channel 2 received" '[ $? -eq 0 ]'
+}
+
+scenario_signal_consumed_once() {
+    echo "Scenario: signal is consumed — second wait times out"
+
+    local ch="wake-test-consumed-$$"
+    wake "$ch" 2>/dev/null
+
+    wake --wait "$ch" --timeout 2 2>/dev/null
+    check "first wait succeeds" '[ $? -eq 0 ]'
+
+    local rc=0
+    wake --wait "$ch" --timeout 1 2>/dev/null || rc=$?
+    check "second wait times out (signal consumed)" '[ $rc -eq 2 ]'
+}
+
+scenario_auto_discover_single_claude() {
+    echo "Scenario: auto-discover with mock claude pane"
+
+    # Create a test tmux session with a pane running "claude" (faked)
+    local test_sess="wake-test-discover-$$"
+    tmux new-session -d -s "$test_sess" -x 80 -y 24
+
+    # Get the pane ID of the shell in the test session
+    local shell_pane
+    shell_pane=$(tmux list-panes -t "$test_sess" -F '#{pane_id}')
+
+    # We can't easily fake pane_current_command, so test the error case:
+    # from a window with no claude pane, wake should fail
+    local rc=0
+    tmux send-keys -t "$test_sess" "wake 2>/dev/null; echo \"EXIT:\$?\"" C-m
+    sleep 0.5
+    local out
+    out=$(tmux capture-pane -t "$test_sess" -p)
+
+    # Should show exit 1 (no claude found) — unless there happens to be a
+    # claude pane in whatever window tmux considers "current" for this session
+    check "wake errors or finds claude pane" 'echo "$out" | grep -qE "EXIT:[01]"'
+
+    tmux kill-session -t "$test_sess" 2>/dev/null || true
+}
+
+scenario_unknown_option() {
+    echo "Scenario: unknown option errors"
+
+    local rc=0
+    wake --bogus 2>/dev/null || rc=$?
+    check "exit code is 1 for unknown option" '[ $rc -eq 1 ]'
+}
+
+scenario_real_workflow() {
+    echo "Scenario: simulated real workflow (command + tee + wake)"
+
+    local ch="wake-test-workflow-$$"
+    local outfile="/tmp/wake-test-workflow-$$.log"
+
+    # Simulate: user runs a command, tees output, then wakes
+    (echo "line 1" > "$outfile"; echo "line 2" >> "$outfile"; sleep 0.3; wake "$ch") &
+    local bg_pid=$!
+
+    wake --wait "$ch" --timeout 5 --output "$outfile" 2>/dev/null
+    local rc=$?
+    local content
+    content=$(cat "$outfile" 2>/dev/null || echo "")
+
+    wait $bg_pid 2>/dev/null || true
+
+    check "wait succeeded" '[ $rc -eq 0 ]'
+    check "output has line 1" 'echo "$content" | grep -q "line 1"'
+    check "output has line 2" 'echo "$content" | grep -q "line 2"'
+
+    rm -f "$outfile"
+}
+
+# ============================================================================
+# Runner
+# ============================================================================
+
+ALL_SCENARIOS=$(declare -F | awk '/scenario_/ { sub(/.*scenario_/, ""); print }' | sort)
+
+if [[ "${1:-}" == "--list" ]]; then
+    echo "Available scenarios:"
+    for s in $ALL_SCENARIOS; do echo "  $s"; done
+    exit 0
+fi
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    echo "Usage: wake-test [scenario|--list]"
+    exit 0
+fi
+
+RUN_SCENARIO="${1:-}"
+
+echo "=== wake-test ==="
+echo ""
+
+for scenario in $ALL_SCENARIOS; do
+    if [[ -n "$RUN_SCENARIO" && "$scenario" != "$RUN_SCENARIO" ]]; then
+        continue
+    fi
+    "scenario_$scenario"
+    echo ""
+done
+
+echo "=== Results: $PASSED passed, $FAILED failed ==="
+if [[ $FAILED -gt 0 ]]; then
+    echo -e "\nFailures:$ERRORS"
+    exit 1
+fi

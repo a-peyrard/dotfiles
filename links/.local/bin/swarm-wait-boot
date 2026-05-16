@@ -1,0 +1,65 @@
+#!/bin/bash
+# swarm-wait-boot — Wait for a sub-session to finish booting
+#
+# Usage: swarm-wait-boot --id <swarm-id> --name <name> [--timeout <seconds>]
+#
+# Blocks until the sub-session's Stop hook fires the "ready" signal.
+# Use after swarm-spawn (without --wait-boot) when spawning multiple
+# sessions in parallel.
+#
+# Example (parallel spawn + sequential wait):
+#   swarm-spawn --id debate --name ai-justin --prompt-file ...
+#   swarm-spawn --id debate --name grumpy --prompt-file ...
+#   swarm-wait-boot --id debate --name ai-justin
+#   swarm-wait-boot --id debate --name grumpy
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-wait-boot --id <swarm-id> --name <name> [--timeout <seconds>]
+
+Wait for a sub-session to finish booting (processing its initial prompt).
+Blocks on the Stop hook's "ready" signal via tmux wait-for.
+
+Use after swarm-spawn (without --wait-boot) when spawning multiple
+sessions in parallel:
+
+  # Spawn all (fast, parallel boot)
+  swarm-spawn --id my-swarm --name worker1 --prompt-file ...
+  swarm-spawn --id my-swarm --name worker2 --prompt-file ...
+  # Wait for all to be ready
+  swarm-wait-boot --id my-swarm --name worker1
+  swarm-wait-boot --id my-swarm --name worker2
+
+Options:
+  --timeout <seconds>  Max wait (default: 60)
+HELP
+    exit 0
+fi
+
+id=""
+name=""
+boot_timeout=60
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --timeout) boot_timeout="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$id" ] || [ -z "$name" ]; then
+    echo "Usage: swarm-wait-boot --id <id> --name <name> [--timeout <seconds>]" >&2
+    exit 1
+fi
+
+channel="swarm-${id}-${name}-ready"
+timeout "$boot_timeout" tmux wait-for "$channel" 2>/dev/null
+rc=$?
+if [ $rc -eq 124 ]; then
+    echo "WARNING: Timed out waiting for ${name} to be ready (${boot_timeout}s)" >&2
+    exit 1
+fi

@@ -1,0 +1,28 @@
+#!/bin/bash
+# swarm-hook-stop — Signal readiness after each LLM turn
+#
+# Called from the Stop hook. If this session is part of a swarm
+# (SWARM_ID and SWARM_NAME are set), fires a "ready" signal so
+# the master knows the sub-session is idle and accepting input.
+#
+# The master only waits for this signal once (after spawn). Subsequent
+# signals are harmless — tmux wait-for -S on an unconsumed channel
+# just sets a flag that nobody reads.
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: swarm-hook-stop"
+    echo ""
+    echo "Claude Code Stop hook for swarm sub-sessions. Signals readiness"
+    echo "after each LLM turn so the master knows the sub-session is idle."
+    echo ""
+    echo "Reads SWARM_ID and SWARM_NAME from environment. Not run manually."
+    exit 0
+fi
+
+swarm_id="${SWARM_ID:-}"
+swarm_name="${SWARM_NAME:-}"
+
+[ -z "$swarm_id" ] && exit 0
+[ -z "$swarm_name" ] && exit 0
+
+tmux wait-for -S "swarm-${swarm_id}-${swarm_name}-ready" 2>/dev/null || true
