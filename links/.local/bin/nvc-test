@@ -289,6 +289,18 @@ run_scenario() {
 }
 
 # Main
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: nvc-test              Run all scenarios"
+    echo "       nvc-test <name>       Run a specific scenario"
+    echo "       nvc-test --list       List available scenarios"
+    echo ""
+    echo "Integration tests for nvc Claude<>nvim pairing. Each scenario runs"
+    echo "in an isolated tmux window and cleans up after itself."
+    echo ""
+    echo "Scenarios test: spawn/pair, highlight, quit/cleanup, reopen, standalone nvim."
+    exit 0
+fi
+
 echo "nvc integration tests"
 echo "====================="
 
