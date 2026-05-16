@@ -1,0 +1,109 @@
+#!/bin/bash
+# wake — notify Claude Code that a manual command finished
+#
+# Usage:
+#   <command> 2>&1 | tee /tmp/output.log ; wake [ID]
+#   wake --wait [ID] [--timeout N] [--output FILE]
+
+set -euo pipefail
+
+show_help() {
+    cat << 'HELP'
+Usage: <command> ; wake [ID]
+       wake --wait [ID] [--timeout N] [--output FILE]
+
+Notify your Claude Code session when a manual command finishes.
+Uses tmux wait-for — zero polling, instant notification.
+
+Signal mode (default — run from your shell pane):
+  ssh host 'query' 2>&1 | tee /tmp/result.log ; wake
+  buck2 build //target 2>&1 | tee /tmp/build.log ; wake
+  <command> ; wake myid          # explicit ID (for multi-pane windows)
+
+Wait mode (Claude's side):
+  wake --wait                    # auto-discover, 300s timeout
+  wake --wait myid               # explicit ID
+  wake --wait --timeout 600      # custom timeout
+  wake --wait --output /tmp/r.log  # print file contents after signal
+
+Without an ID, auto-discovers the single Claude pane in the current
+tmux window. Use an explicit ID when multiple Claude panes exist
+(e.g., during a debate).
+HELP
+}
+
+find_claude_pane() {
+    local win
+    win=$(tmux display-message -p '#{window_index}' 2>/dev/null) || {
+        echo "wake: not in a tmux session" >&2; return 1
+    }
+
+    local panes
+    panes=$(tmux list-panes -t ":${win}" -F '#{pane_id} #{pane_current_command}' \
+        | awk '$2 == "claude" { print $1 }')
+
+    local count
+    count=$(echo "$panes" | grep -c '%' || true)
+
+    if [[ $count -eq 0 ]]; then
+        echo "wake: no Claude session found in window $win" >&2
+        return 1
+    elif [[ $count -gt 1 ]]; then
+        echo "wake: multiple Claude sessions in window $win — specify an ID" >&2
+        echo "  wake <id>  /  wake --wait <id>" >&2
+        return 1
+    fi
+
+    echo "$panes"
+}
+
+mode="signal"
+timeout_secs=300
+output_file=""
+channel_id=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --wait) mode="wait"; shift ;;
+        --timeout) timeout_secs="$2"; shift 2 ;;
+        --output) output_file="$2"; shift 2 ;;
+        -h|--help) show_help; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "wake: unknown option: $1" >&2; exit 1 ;;
+        *) channel_id="$1"; shift ;;
+    esac
+done
+
+if [[ "$mode" == "signal" ]]; then
+    if [[ -n "$channel_id" ]]; then
+        channel="wake-${channel_id}"
+    else
+        claude_pane=$(find_claude_pane) || exit 1
+        channel="wake-${claude_pane}"
+    fi
+
+    tmux wait-for -S "$channel"
+    echo "wake: signaled ($channel)"
+
+else
+    if [[ -n "$channel_id" ]]; then
+        channel="wake-${channel_id}"
+    else
+        my_pane=$(tmux display-message -p '#{pane_id}')
+        channel="wake-${my_pane}"
+    fi
+
+    if ! timeout "$timeout_secs" tmux wait-for "$channel" 2>/dev/null; then
+        echo "wake: timed out after ${timeout_secs}s" >&2
+        exit 2
+    fi
+
+    if [[ -n "$output_file" ]]; then
+        if [[ -f "$output_file" ]]; then
+            cat "$output_file"
+        else
+            echo "wake: output file not found: $output_file" >&2
+            exit 1
+        fi
+    fi
+fi

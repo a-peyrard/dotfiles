@@ -1,0 +1,156 @@
+#!/bin/bash
+# swarm-sessions — Discover all running Claude Code sessions
+#
+# Usage: swarm-sessions [-v]
+#
+# Lists all Claude Code sessions across all tmux windows with their
+# window number, pane ID, session name, and status. Use this to find
+# the right pane ID before sending messages with swarm-send.
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-sessions [-v]
+
+List all running Claude Code sessions across tmux windows.
+
+Options:
+  -v    Verbose: include pane ID, session UUID, status
+
+Output (compact):
+  Window  Name                    Status
+  3       gpu improvements        waiting
+  13      nvim daily              waiting
+
+Output (verbose):
+  Window  Pane    Name                    Status    Session ID
+  3       %1281   gpu improvements        waiting   3d32c531...
+  13      %303    nvim daily              waiting   3fe70c66...
+
+Use the pane ID with swarm-send:
+  swarm-send <file> --pane %303
+HELP
+    exit 0
+fi
+
+verbose=false
+[ "${1:-}" = "-v" ] && verbose=true
+
+tmux_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || echo "")
+state_dir="$HOME/.claude-sessions/state"
+
+python3 << PYEOF
+import json, subprocess, os, glob
+
+# Get all claude panes from tmux
+result = subprocess.run(
+    ["tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{window_index}\t#{window_name}\t#{pane_current_command}"],
+    capture_output=True, text=True
+)
+
+claude_panes = []
+for line in result.stdout.strip().split("\n"):
+    if not line:
+        continue
+    parts = line.split("\t")
+    if len(parts) < 4:
+        continue
+    pane_id, win_idx, win_name, cmd = parts[0], parts[1], parts[2], parts[3]
+    if cmd == "claude":
+        claude_panes.append((pane_id, win_idx, win_name))
+
+# Build status map from claude-state files
+status_map = {}
+session_map = {}
+session_id_full = {}
+tmux_pid = "${tmux_pid}"
+state_dir = "${state_dir}"
+state_path = os.path.join(state_dir, tmux_pid)
+if os.path.isdir(state_path):
+    for f in glob.glob(os.path.join(state_path, "*.json")):
+        try:
+            d = json.load(open(f))
+            pid = d.get("pane_id", "")
+            status_map[pid] = d.get("status", "unknown")
+            sid = d.get("session_id", "")
+            session_map[pid] = sid[:12]
+            session_id_full[pid] = sid
+        except:
+            pass
+
+# Extract session names from transcript JSONL files (custom-title entries)
+name_map = {}
+project_dir = os.path.expanduser("~/.claude/projects")
+for pid, sid in session_id_full.items():
+    if not sid:
+        continue
+    # Search for the JSONL file across project dirs
+    for pdir in glob.glob(os.path.join(project_dir, "*")):
+        tp = os.path.join(pdir, f"{sid}.jsonl")
+        if os.path.exists(tp):
+            try:
+                last_title = None
+                with open(tp, 'rb') as fh:
+                    # Read from end for efficiency — custom-title is usually near the end
+                    import mmap
+                    try:
+                        mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+                        # Search backwards for custom-title
+                        pos = mm.rfind(b'"custom-title"')
+                        if pos >= 0:
+                            # Find the start of this line
+                            line_start = mm.rfind(b'\n', 0, pos)
+                            line_start = line_start + 1 if line_start >= 0 else 0
+                            line_end = mm.find(b'\n', pos)
+                            line_end = line_end if line_end >= 0 else len(mm)
+                            line = mm[line_start:line_end].decode('utf-8', errors='replace')
+                            d = json.loads(line)
+                            last_title = d.get("customTitle", "")
+                        mm.close()
+                    except:
+                        pass
+                if last_title:
+                    name_map[pid] = last_title
+            except:
+                pass
+            break
+
+verbose = $($verbose && echo True || echo False)
+
+# Build nvim pairing map: claude_pane → nvim_pane (via nvc-claude-* files)
+nvim_map = {}
+for f in glob.glob("/tmp/nvc-claude-*"):
+    try:
+        uuid = os.path.basename(f).replace("nvc-claude-", "")
+        claude_pane = open(f).read().strip()
+        sock = f"/tmp/nvim-claude-{os.environ.get('USER', 'unknown')}-{uuid}.sock"
+        sock_alive = os.path.exists(sock) and not os.path.isfile(sock)  # socket, not file
+        if claude_pane and sock_alive:
+            nvim_map[claude_pane] = f"nvim({uuid[:8]})"
+        elif claude_pane:
+            nvim_map[claude_pane] = f"nvim(dead)"
+    except:
+        pass
+
+if verbose:
+    print(f"  {'Window':<30} {'Pane':<8} {'Session':<32} {'Status':<10} {'Nvim':<14} {'Session ID'}")
+    print(f"  {'------':<30} {'----':<8} {'-------':<32} {'------':<10} {'----':<14} {'----------'}")
+else:
+    print(f"  {'Window':<30} {'Session':<32} {'Status':<10} {'Nvim'}")
+    print(f"  {'------':<30} {'-------':<32} {'------':<10} {'----'}")
+
+for pane_id, win_idx, win_name in sorted(claude_panes, key=lambda x: int(x[1]) if x[1].isdigit() else 999):
+    status = status_map.get(pane_id, "unknown")
+    sid = session_map.get(pane_id, "")
+    nvim = nvim_map.get(pane_id, "")
+    # Window: number + tmux window name in parenthesis
+    win_display = f"{win_idx} ({win_name})"
+    # Session: Claude session name (from /rename), falls back to tmux window name
+    session_name = name_map.get(pane_id, win_name)
+
+    if verbose:
+        print(f"  {win_display:<30} {pane_id:<8} {session_name:<32} {status:<10} {nvim:<14} {sid}")
+    else:
+        print(f"  {win_display:<30} {session_name:<32} {status:<10} {nvim}")
+PYEOF

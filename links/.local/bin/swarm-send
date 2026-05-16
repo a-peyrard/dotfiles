@@ -1,0 +1,97 @@
+#!/bin/bash
+# swarm-send — Inject a prompt into an existing Claude Code session
+#
+# Usage: swarm-send <prompt-file> --id <id> --name <name>
+#        swarm-send <prompt-file> --pane <pane_id>
+#
+# Checks session readiness (via claude-state) before pasting.
+# Uses named tmux paste-buffers to prevent interleaving.
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-send <prompt-file> --id <id> --name <name>
+       swarm-send <prompt-file> --pane <pane_id>
+
+Inject a prompt into an existing Claude Code session via tmux paste-buffer.
+
+Addressing modes (pick one):
+  --id <id> --name <name>   Look up pane from swarm's panes.txt
+  --pane <pane_id>          Direct pane ID (escape hatch)
+
+Uses claude-inject under the hood (named paste-buffers, C-m submit).
+HELP
+    exit 0
+fi
+
+prompt_file=""
+id=""
+name=""
+pane=""
+
+# Parse args — prompt-file is the first non-flag argument
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --pane) pane="$2"; shift 2 ;;
+        -*)  echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            if [ -z "$prompt_file" ]; then
+                prompt_file="$1"; shift
+            else
+                echo "Unexpected argument: $1" >&2; exit 1
+            fi
+            ;;
+    esac
+done
+
+if [ -z "$prompt_file" ]; then
+    echo "Usage: swarm-send <prompt-file> --id <id> --name <name>" >&2
+    exit 1
+fi
+
+if [ ! -f "$prompt_file" ]; then
+    echo "ERROR: Prompt file not found: $prompt_file" >&2
+    exit 1
+fi
+
+# Resolve pane ID
+target_pane=""
+buf_name="swarm-send-$$"
+
+if [ -n "$id" ] && [ -n "$name" ]; then
+    swarm_dir="/tmp/swarm/${id}"
+    panes_file="${swarm_dir}/panes.txt"
+    if [ ! -f "$panes_file" ]; then
+        echo "ERROR: No panes.txt for swarm '$id'" >&2
+        exit 1
+    fi
+    target_pane=$(grep "^${name}:" "$panes_file" 2>/dev/null | head -1 | cut -d: -f2)
+    if [ -z "$target_pane" ]; then
+        echo "ERROR: Session '$name' not found in swarm '$id'" >&2
+        exit 1
+    fi
+    buf_name="swarm-${id}-${name}"
+elif [ -n "$pane" ]; then
+    target_pane="$pane"
+    buf_name="swarm-direct-$$"
+else
+    echo "ERROR: Provide --id <id> --name <name> or --pane <pane_id>" >&2
+    exit 1
+fi
+
+# Clear dedup flag so the sub can signal again (enables follow-up rounds)
+if [ -n "$id" ] && [ -n "$name" ]; then
+    rm -f "${swarm_dir}/.signaled-${name}"
+fi
+
+# Delegate to claude-inject
+# Note: --wait-ready is available but disabled by default. The readiness check
+# can backfire when the sub-session is running a long tool call — the paste
+# lands in the terminal but isn't processed as a new prompt. Without the check,
+# the paste goes into the input buffer and is processed when the session is idle.
+claude-inject "$target_pane" "$prompt_file"
+
+echo "Sent to ${name:-direct} ($target_pane)"

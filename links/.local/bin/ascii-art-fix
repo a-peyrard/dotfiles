@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""ascii-art-fix v1.0.0 — Display-width-aware ASCII art verifier and fixer.
+
+Checks and fixes Unicode box-drawing alignment in markdown code blocks,
+handling wide characters (emojis) correctly.
+
+Features:
+  - Outer box border alignment (┌┐└┘│├┤)
+  - Inner/nested box border alignment
+  - Side-by-side boxes (KPI cards) handled without false positives
+  - Emoji/CJK display width awareness (2-column chars)
+  - Stray ASCII detection (+, -->, mixed ─/-)
+  - Iterative convergence for cascading inner→outer fixes
+
+Usage:
+  ascii-art-fix verify <file>   # check only, exit 1 on errors
+  ascii-art-fix fix <file>      # fix and re-verify
+  ascii-art-fix --version
+"""
+__version__ = "1.0.0"
+
+import re
+import sys
+import unicodedata
+
+
+def char_width(c):
+    eaw = unicodedata.east_asian_width(c)
+    return 2 if eaw in ('W', 'F') else 1
+
+
+def display_width(s):
+    return sum(char_width(c) for c in s)
+
+
+def display_col_of_char(s, char_idx):
+    col = 0
+    for i in range(char_idx):
+        col += char_width(s[i])
+    return col
+
+
+def find_all_display(s, ch):
+    """Return list of (char_index, display_column) for all occurrences of ch."""
+    results = []
+    col = 0
+    for i, c in enumerate(s):
+        if c == ch:
+            results.append((i, col))
+        col += char_width(c)
+    return results
+
+
+def fix_border_at_dcol(s, border_char, current_cidx, target_dcol):
+    """Move a border character from current_cidx to target_dcol by
+    adjusting whitespace/fill before it."""
+    fill = '─' if border_char in ('┤', '┘') else ' '
+
+    before = s[:current_cidx]
+    after = s[current_cidx + 1:]
+
+    before_stripped = before.rstrip(fill).rstrip(' ')
+    before_dw = display_width(before_stripped)
+    needed = target_dcol - before_dw
+
+    if needed <= 0:
+        return s
+
+    return before_stripped + fill * needed + border_char + after
+
+
+def verify(filepath, fix=False):
+    lines = open(filepath).readlines()
+
+    in_code = False
+    is_wireframe = False
+    result = []
+    errors = 0
+    fixes = 0
+
+    box_stack = []  # [(left_cidx, right_dcol, start_line), ...]
+    outer_dcol = None
+
+    for i, raw in enumerate(lines):
+        s = raw.rstrip('\n')
+        stripped = s.strip()
+
+        if stripped.startswith('```'):
+            if not in_code:
+                in_code = True
+                is_wireframe = (stripped == '```')
+                outer_dcol = None
+                box_stack = []
+            else:
+                in_code = False
+                is_wireframe = False
+            result.append(raw)
+            continue
+
+        if not in_code or not is_wireframe:
+            result.append(raw)
+            continue
+
+        # --- Static checks ---
+        if re.search(r'\+[-─]{2,}', s) or re.search(r'[-─]{2,}\+', s):
+            print(f'L{i+1}: stray + among box chars'); errors += 1
+        if re.search(r'-{3,}>', s):
+            print(f'L{i+1}: ASCII arrow --->'); errors += 1
+        if re.search(r'┌[─]*[v▼][─]*┐', s):
+            print(f'L{i+1}: arrow inside border'); errors += 1
+
+        # --- Detect box openings (┌...┐) ---
+        col = 0
+        for j, c in enumerate(s):
+            if c == '┌':
+                right_idx = s.find('┐', j + 1)
+                if right_idx > 0:
+                    right_dcol = display_col_of_char(s, right_idx)
+                    if j == 0:
+                        outer_dcol = right_dcol
+                    box_stack.append((j, right_dcol, i))
+            col += char_width(c)
+
+        # --- Detect box closings (└...┘) and pop from stack ---
+        for j, c in enumerate(s):
+            if c == '└':
+                box_stack = [(l, r, sl) for l, r, sl in box_stack if l != j]
+
+        # --- Fix/verify border alignment for all active boxes ---
+        # Inner boxes first (higher left_cidx), then outer (0).
+        for left_cidx, expected_dcol, _ in sorted(box_stack, key=lambda x: -x[0]):
+            if s[0] != '│' if left_cidx == 0 else (len(s) <= left_cidx or s[left_cidx] not in ('│', '├')):
+                continue
+
+            if left_cidx == 0:
+                border_chars = (
+                    find_all_display(s, '│') +
+                    find_all_display(s, '┤') +
+                    find_all_display(s, '┘')
+                )
+                if not border_chars:
+                    continue
+                border_chars.sort(key=lambda x: x[1])
+                last_cidx, last_dcol = border_chars[-1]
+
+                if last_dcol != expected_dcol:
+                    if fix:
+                        ch = s[last_cidx]
+                        s = fix_border_at_dcol(s, ch, last_cidx, expected_dcol)
+                        fixes += 1
+                    else:
+                        print(f'L{i+1}: outer border at dcol {last_dcol}, expected {expected_dcol}')
+                        errors += 1
+            else:
+                # Inner box: nearest to expected_dcol, within ±10.
+                # Avoids false matches on side-by-side boxes (KPI cards).
+                all_borders = (
+                    find_all_display(s, '│') +
+                    find_all_display(s, '┤')
+                )
+                candidates = [
+                    (ci, dc) for ci, dc in all_borders
+                    if ci > left_cidx and abs(dc - expected_dcol) <= 10
+                ]
+
+                if not candidates:
+                    continue
+
+                candidates.sort(key=lambda x: abs(x[1] - expected_dcol))
+                best_cidx, best_dcol = candidates[0]
+
+                if best_dcol != expected_dcol:
+                    if fix:
+                        ch = s[best_cidx]
+                        s = fix_border_at_dcol(s, ch, best_cidx, expected_dcol)
+                        fixes += 1
+                    else:
+                        print(f'L{i+1}: inner border at dcol {best_dcol}, expected {expected_dcol}')
+                        errors += 1
+
+        result.append(s + '\n')
+
+    if fix:
+        with open(filepath, 'w') as f:
+            f.writelines(result)
+        print(f'Applied {fixes} fixes')
+    else:
+        print(f'\n{"All checks passed" if errors == 0 else f"{errors} errors found"}')
+
+    return errors
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-V'):
+        print(f'ascii-art-fix {__version__}')
+        sys.exit(0)
+
+    if len(sys.argv) < 2 or sys.argv[1] in ('--help', '-h'):
+        print(__doc__)
+        sys.exit(0)
+
+    mode = sys.argv[1]
+    filepath = sys.argv[2] if len(sys.argv) > 2 else None
+
+    if mode not in ('verify', 'fix'):
+        print(f"Unknown mode: {mode}")
+        print("Usage: ascii-art-fix [verify|fix] <file>")
+        sys.exit(1)
+
+    if not filepath:
+        print("Missing file argument.")
+        print("Usage: ascii-art-fix [verify|fix] <file>")
+        sys.exit(1)
+
+    if mode == 'fix':
+        for attempt in range(5):
+            verify(filepath, fix=True)
+            remaining = verify(filepath, fix=False)
+            if remaining == 0:
+                break
+            print(f"\n--- Pass {attempt + 2} ---")
+        if remaining > 0:
+            print(f"\nWARNING: {remaining} errors remain after 5 passes")
+            sys.exit(1)
+    else:
+        errors = verify(filepath, fix=False)
+        sys.exit(1 if errors > 0 else 0)

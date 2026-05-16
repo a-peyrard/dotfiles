@@ -1,0 +1,85 @@
+#!/bin/bash
+# swarm-wait — Block until a sub-session signals completion
+#
+# Usage: swarm-wait --id <swarm-id> --name <name> [--timeout <seconds>]
+#
+# Blocks on tmux wait-for until the sub-session calls swarm-respond.
+# Retries automatically to handle the Bash tool's timeout limits.
+#
+# Exit codes:
+#   0 = response ready (response file exists)
+#   1 = error (sub crashed, error file exists)
+#   2 = timeout exhausted
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-wait --id <swarm-id> --name <name> [--timeout <seconds>]
+
+Block until a sub-session signals completion via swarm-respond.
+Uses tmux wait-for (zero polling, instant unblock).
+
+Options:
+  --id <string>       Swarm identifier
+  --name <string>     Sub-session name to wait for
+  --timeout <seconds> Max wait per attempt (default: 120, retries automatically)
+
+Exit codes:
+  0 = response ready (response file exists)
+  1 = error (sub crashed, error file exists)
+  2 = timeout exhausted
+HELP
+    exit 0
+fi
+
+id=""
+name=""
+total_timeout=120
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) id="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --timeout) total_timeout="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$id" ] || [ -z "$name" ]; then
+    echo "Usage: swarm-wait --id <swarm-id> --name <name> [--timeout <seconds>]" >&2
+    exit 1
+fi
+
+swarm_dir="/tmp/swarm/${id}"
+channel="swarm-${id}-${name}-done"
+response_file="${swarm_dir}/response-${name}.md"
+error_file="${swarm_dir}/error-${name}.md"
+
+deadline=$((SECONDS + total_timeout))
+attempt_timeout=60
+
+while [ $SECONDS -lt $deadline ]; do
+    remaining=$((deadline - SECONDS))
+    [ $remaining -le 0 ] && break
+    [ $remaining -lt $attempt_timeout ] && attempt_timeout=$remaining
+
+    timeout "$attempt_timeout" tmux wait-for "$channel" 2>/dev/null && break
+    rc=$?
+
+    if [ $rc -ne 124 ]; then
+        break
+    fi
+done
+
+if [ -f "$error_file" ]; then
+    cat "$error_file" >&2
+    exit 1
+fi
+
+if [ -f "$response_file" ]; then
+    exit 0
+fi
+
+echo "Timeout waiting for ${name} (${total_timeout}s)" >&2
+exit 2

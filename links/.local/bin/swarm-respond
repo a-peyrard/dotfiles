@@ -1,0 +1,79 @@
+#!/bin/bash
+# swarm-respond — Signal that a sub-session's response is ready
+#
+# Usage: swarm-respond <response-file>
+#        swarm-respond --id <swarm-id> --name <name> <response-file>
+#
+# In swarm-spawned sessions: reads SWARM_ID/SWARM_NAME from env.
+# In existing sessions (asked via /swarm): pass --id and --name explicitly.
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: swarm-respond <response-file>
+       swarm-respond --id <swarm-id> --name <name> <response-file>
+
+Signal that a response is ready. Call this after writing your response file.
+
+In swarm-spawned sessions, SWARM_ID and SWARM_NAME are set automatically.
+In existing sessions (asked via swarm-send), pass --id and --name explicitly.
+
+What it does:
+  1. Verifies response file exists
+  2. Creates dedup flag (.signaled-<name>)
+  3. Fires tmux wait-for -S to unblock the master's swarm-wait
+
+Examples:
+  # In a swarm-spawned session (env vars set):
+  swarm-respond /tmp/swarm/abc123/response.md
+
+  # In an existing session (no env vars):
+  swarm-respond --id swarm-ask-123 --name answer /tmp/swarm/swarm-ask-123/response-answer.md
+HELP
+    exit 0
+fi
+
+swarm_id="${SWARM_ID:-}"
+swarm_name="${SWARM_NAME:-}"
+response=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --id) swarm_id="$2"; shift 2 ;;
+        --name) swarm_name="$2"; shift 2 ;;
+        -*)  echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            if [ -z "$response" ]; then
+                response="$1"; shift
+            else
+                echo "Unexpected argument: $1" >&2; exit 1
+            fi
+            ;;
+    esac
+done
+
+if [ -z "$swarm_id" ] || [ -z "$swarm_name" ]; then
+    echo "ERROR: SWARM_ID and SWARM_NAME must be set (env) or passed via --id/--name" >&2
+    echo "Usage: swarm-respond --id <id> --name <name> <response-file>" >&2
+    exit 1
+fi
+
+if [ -z "$response" ]; then
+    echo "Usage: swarm-respond [--id <id> --name <name>] <response-file>" >&2
+    exit 1
+fi
+
+if [ ! -f "$response" ]; then
+    echo "ERROR: Response file not found: $response" >&2
+    echo "Write your response there first, then run swarm-respond." >&2
+    exit 1
+fi
+
+swarm_dir="/tmp/swarm/${swarm_id}"
+channel="swarm-${swarm_id}-${swarm_name}-done"
+signaled="${swarm_dir}/.signaled-${swarm_name}"
+
+mkdir -p "$swarm_dir"
+touch "$signaled"
+tmux wait-for -S "$channel"

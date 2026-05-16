@@ -1,0 +1,54 @@
+#!/bin/bash
+# debate-verdicts — Extract VERDICT lines from reviewer response files
+# Usage: debate-verdicts <debate-id> <round> [persona1] [persona2] ...
+# If no personas specified, reads all round-N-*.md files
+# Output: one line per persona: <persona> <COLOR>
+
+set -euo pipefail
+
+if [[ "${1:-}" =~ ^(-h|--help)$ ]]; then
+    cat << 'HELP'
+Usage: debate-verdicts <debate-id> <round> [persona1] [persona2] ...
+
+Extract VERDICT lines from reviewer response files.
+
+Arguments:
+  debate-id   Swarm ID for the debate
+  round       Round number (e.g., 1, 2, 3)
+  personas    Optional — if omitted, reads all round-N-*.md files
+
+Looks for files at /tmp/swarm/<debate-id>/round-<round>-<persona>.md
+Output: one line per persona: <persona> <COLOR>
+
+Example:
+  debate-verdicts debate-123 1 ai-justin grumpy
+  # ai-justin YELLOW
+  # grumpy GREEN
+HELP
+    exit 0
+fi
+
+did="$1"; shift
+round="$1"; shift
+
+if [ $# -gt 0 ]; then
+  personas=("$@")
+else
+  personas=()
+  for f in /tmp/swarm/$did/round-${round}-*.md; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f" | sed "s/round-${round}-//" | sed 's/\.md$//')
+    personas+=("$name")
+  done
+fi
+
+for p in "${personas[@]}"; do
+  f="/tmp/swarm/$did/round-${round}-${p}.md"
+  if [ -f "$f" ]; then
+    verdict=$(sed -n 's/.*VERDICT:[[:space:]]*\([A-Z]*\).*/\1/p' "$f" 2>/dev/null | tail -1)
+    [ -z "$verdict" ] && verdict="NONE"
+    echo "$p $verdict"
+  else
+    echo "$p TIMEOUT"
+  fi
+done

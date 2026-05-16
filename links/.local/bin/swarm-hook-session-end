@@ -1,0 +1,48 @@
+#!/bin/bash
+# swarm-hook-session-end — Safety net for swarm sub-sessions
+#
+# Called from the SessionEnd hook. If this session is part of a swarm
+# (SWARM_ID and SWARM_NAME are set), ensures the master is signaled:
+#
+# - If response file exists but wasn't signaled → signal (safety net)
+# - If no response file → write error file + signal (crash detection)
+# - If already signaled → no-op
+#
+# Reads hook JSON from stdin (ignored — we use env vars).
+
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "Usage: swarm-hook-session-end"
+    echo ""
+    echo "Claude Code SessionEnd hook for swarm sub-sessions. Safety net that"
+    echo "ensures the master is signaled when a sub-session exits, even if"
+    echo "swarm-respond was never called (crash detection)."
+    echo ""
+    echo "Reads SWARM_ID and SWARM_NAME from environment. Not run manually."
+    exit 0
+fi
+
+swarm_id="${SWARM_ID:-}"
+swarm_name="${SWARM_NAME:-}"
+
+[ -z "$swarm_id" ] && exit 0
+[ -z "$swarm_name" ] && exit 0
+
+swarm_dir="/tmp/swarm/${swarm_id}"
+response="${swarm_dir}/response-${swarm_name}.md"
+error="${swarm_dir}/error-${swarm_name}.md"
+signaled="${swarm_dir}/.signaled-${swarm_name}"
+channel="swarm-${swarm_id}-${swarm_name}-done"
+
+[ ! -d "$swarm_dir" ] && exit 0
+[ -f "$signaled" ] && exit 0
+
+if [ -f "$response" ]; then
+    touch "$signaled"
+    tmux wait-for -S "$channel" 2>/dev/null || true
+else
+    echo "Sub-session ${swarm_name} exited without writing response" > "$error"
+    touch "$signaled"
+    tmux wait-for -S "$channel" 2>/dev/null || true
+fi
