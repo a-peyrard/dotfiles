@@ -119,4 +119,7 @@ ignore = [
     "**/README.md",
     # LLVM coverage artifact
     "**/default.profraw",
+    # Claude runtime state
+    ".claude/.last-cleanup",
+    ".claude/dcr/",
 ]
