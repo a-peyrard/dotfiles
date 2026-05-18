@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ascii-art-fix v1.0.0 — Display-width-aware ASCII art verifier and fixer.
+"""ascii-art-fix v2.0.0 — Display-width-aware ASCII art verifier and fixer.
 
 Checks and fixes Unicode box-drawing alignment in markdown code blocks,
 handling wide characters (emojis) correctly.
@@ -8,6 +8,7 @@ Features:
   - Outer box border alignment (┌┐└┘│├┤)
   - Inner/nested box border alignment
   - Side-by-side boxes (KPI cards) handled without false positives
+  - Sequence diagram pipe alignment (auto-detected column grid)
   - Emoji/CJK display width awareness (2-column chars)
   - Stray ASCII detection (+, -->, mixed ─/-)
   - Iterative convergence for cascading inner→outer fixes
@@ -17,7 +18,7 @@ Usage:
   ascii-art-fix fix <file>      # fix and re-verify
   ascii-art-fix --version
 """
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 import re
 import sys
@@ -51,6 +52,194 @@ def find_all_display(s, ch):
     return results
 
 
+ARROW_CHARS = set('─><')
+BOX_CROSS_CHARS = set('┴┬┼├┤┌┐└┘')
+PIPE_LIKE = set('│┴┬┼├┤')
+
+
+def detect_seq_columns(line):
+    """If line looks like a sequence diagram pipe line (≥3 pipes separated by
+    spaces), return the list of display columns. Otherwise return None."""
+    pipes = find_all_display(line, '│')
+    if len(pipes) < 3:
+        return None
+    for ci, dc in pipes:
+        if ci > 0 and line[ci - 1] not in (' ', '\t'):
+            return None
+        if ci < len(line) - 1 and line[ci + 1] not in (' ', '\t', '\n'):
+            return None
+    return [dc for _, dc in pipes]
+
+
+def reflow_seq_line(line, ref_cols, fix=False):
+    """Check/fix a sequence diagram line so that pipe-like characters land at
+    the reference display columns.
+
+    Returns (fixed_line, errors_list). Errors are strings like 'pipe at dcol X, expected Y'.
+
+    Strategy: walk through reference columns left-to-right. For each one,
+    find the nearest pipe-like or arrow/box-cross character within a tolerance
+    window. If it's a pipe that's offset, adjust whitespace before it.
+    If the column is occupied by arrow/box chars, skip it (intentional crossing).
+    """
+    errors = []
+    if not line.strip():
+        return line, errors
+
+    # Skip lines with box border corners — their │ are box walls.
+    if '┌' in line or '└' in line or '┐' in line or '┘' in line:
+        return line, errors
+
+    # Skip box content lines: if fewer than half of the pipe positions match
+    # a reference column (within ±1), this line is likely inside a nested box
+    # rather than a normal sequence diagram line.
+    pipe_dcols = set()
+    dcol_tmp = 0
+    for c in line:
+        if c == '│':
+            pipe_dcols.add(dcol_tmp)
+        dcol_tmp += char_width(c)
+    if pipe_dcols:
+        exact_matches = sum(1 for p in pipe_dcols if any(abs(p - r) <= 1 for r in ref_cols))
+        if len(pipe_dcols) >= 3 and exact_matches < len(pipe_dcols) // 2:
+            return line, errors
+
+    chars = list(line.rstrip('\n'))
+    result_chars = []
+    current_dcol = 0
+    char_idx = 0
+
+    ref_set = set(ref_cols)
+    ref_sorted = sorted(ref_cols)
+
+    col_char_map = {}
+    dcol = 0
+    for ci, c in enumerate(chars):
+        col_char_map[dcol] = (ci, c)
+        dcol += char_width(c)
+    total_dcol = dcol
+
+    for ref_dc in ref_sorted:
+        ci_at_ref, ch_at_ref = None, None
+        if ref_dc in col_char_map:
+            ci_at_ref, ch_at_ref = col_char_map[ref_dc]
+
+        if ch_at_ref == '│':
+            continue
+
+        if ch_at_ref in BOX_CROSS_CHARS:
+            continue
+
+        nearby = None
+        for offset in (1, -1, 2, -2, 3, -3, 4, -4):
+            dc = ref_dc + offset
+            if dc in col_char_map:
+                ci, ch = col_char_map[dc]
+                if ch == '│':
+                    nearby = (dc, ci, ch, offset)
+                    break
+
+        if nearby:
+            actual_dc, ci, ch, offset = nearby
+            errors.append(f'pipe at dcol {actual_dc}, expected {ref_dc}')
+
+    if not fix or not errors:
+        return line, errors
+
+    fixed = _reflow_seq_line_fix(chars, ref_sorted, col_char_map, total_dcol)
+    return fixed, errors
+
+
+def _reflow_seq_line_fix(chars, ref_sorted, col_char_map, total_dcol):
+    """Rebuild line by adjusting whitespace/fill around each reference column.
+
+    Arrow-aware: when a pipe is preceded by '>' (arrow head), extends or
+    shrinks the '─' run inside the arrow instead of inserting spaces.
+    """
+    line = ''.join(chars)
+
+    pipe_positions = []
+    dcol = 0
+    for ci, c in enumerate(line):
+        if c == '│':
+            pipe_positions.append((ci, dcol))
+        dcol += char_width(c)
+
+    if not pipe_positions:
+        return line
+
+    if len(pipe_positions) != len(ref_sorted):
+        actual_dcs = [dc for _, dc in pipe_positions]
+        raw_matched = _match_pipes_to_refs(actual_dcs, ref_sorted)
+        matched = []
+        dc_to_ci = {dc: ci for ci, dc in pipe_positions}
+        for actual_dc, target_dc in raw_matched:
+            matched.append((dc_to_ci[actual_dc], actual_dc, target_dc))
+    else:
+        matched = [(ci, dc, ref) for (ci, dc), ref in zip(pipe_positions, ref_sorted)]
+
+    if not matched:
+        return line
+
+    new_chars = list(line)
+    for ci, actual_dc, target_dc in sorted(matched, key=lambda x: -x[0]):
+        shift = target_dc - actual_dc
+        if shift == 0:
+            continue
+
+        # Determine what's before this pipe to choose fill character
+        prev_char = new_chars[ci - 1] if ci > 0 else ' '
+        is_arrow = prev_char in ('>', '─')
+
+        if shift > 0:
+            if is_arrow:
+                fill_pos = ci
+                while fill_pos > 0 and new_chars[fill_pos - 1] in ('─', '>'):
+                    fill_pos -= 1
+                new_chars[fill_pos:fill_pos] = ['─'] * shift
+            else:
+                new_chars[ci:ci] = [' '] * shift
+        else:
+            remove_count = -shift
+            # Remove fill chars immediately before the pipe: spaces and ─.
+            # Never remove arrow heads (> <). Stop at any other character.
+            pos = ci - 1
+            removed = 0
+            while removed < remove_count and pos >= 0:
+                ch = new_chars[pos]
+                if ch in (' ', '─'):
+                    new_chars.pop(pos)
+                    removed += 1
+                    pos -= 1
+                elif ch == '>':
+                    # Skip arrow head — remove ─ behind it instead
+                    pos -= 1
+                else:
+                    break
+
+    return ''.join(new_chars)
+
+
+def _match_pipes_to_refs(actual_dcols, ref_cols):
+    """Match actual pipe display columns to reference columns by proximity."""
+    matched = []
+    used_refs = set()
+    for actual_dc in actual_dcols:
+        best_ref = None
+        best_dist = 999
+        for ref_dc in ref_cols:
+            if ref_dc in used_refs:
+                continue
+            dist = abs(actual_dc - ref_dc)
+            if dist < best_dist:
+                best_dist = dist
+                best_ref = ref_dc
+        if best_ref is not None and best_dist <= 6:
+            matched.append((actual_dc, best_ref))
+            used_refs.add(best_ref)
+    return matched
+
+
 def fix_border_at_dcol(s, border_char, current_cidx, target_dcol):
     """Move a border character from current_cidx to target_dcol by
     adjusting whitespace/fill before it."""
@@ -80,6 +269,7 @@ def verify(filepath, fix=False):
 
     box_stack = []  # [(left_cidx, right_dcol, start_line), ...]
     outer_dcol = None
+    seq_columns = None  # sequence diagram column grid (list of display cols)
 
     for i, raw in enumerate(lines):
         s = raw.rstrip('\n')
@@ -91,15 +281,39 @@ def verify(filepath, fix=False):
                 is_wireframe = (stripped == '```')
                 outer_dcol = None
                 box_stack = []
+                seq_columns = None
             else:
                 in_code = False
                 is_wireframe = False
+                seq_columns = None
             result.append(raw)
             continue
 
         if not in_code or not is_wireframe:
             result.append(raw)
             continue
+
+        # --- Sequence diagram detection ---
+        if seq_columns is None:
+            detected = detect_seq_columns(s)
+            if detected:
+                seq_columns = detected
+
+        # --- Sequence diagram pipe alignment ---
+        # Skip reflow when inside a nested box (box_stack has an entry
+        # whose left_cidx > 0, meaning it's not the outer border).
+        in_nested_box = any(left > 0 for left, _, _ in box_stack)
+        if seq_columns is not None and not in_nested_box:
+            fixed_line, seq_errors = reflow_seq_line(s, seq_columns, fix=fix)
+            if seq_errors:
+                for err in seq_errors:
+                    if fix:
+                        fixes += 1
+                    else:
+                        print(f'L{i+1}: {err}')
+                        errors += 1
+            if fix and seq_errors:
+                s = fixed_line
 
         # --- Static checks ---
         if re.search(r'\+[-─]{2,}', s) or re.search(r'[-─]{2,}\+', s):
