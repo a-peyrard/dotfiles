@@ -7,7 +7,7 @@ add_newline = false
 # Format: [user@host:]directory git_branch git_commit git_status character (all on one line)
 format = """
 $username\
-$hostname\
+${custom.host}\
 $directory\
 $git_branch\
 $git_commit\
@@ -33,10 +33,7 @@ disabled = true
 show_always = false
 
 [hostname]
-ssh_only = true
-format = "[\\[@$hostname\\]]($style): "
-style = "bright-blue"
-disabled = false
+disabled = true
 
 [directory]
 format = "[$path]($style) "
