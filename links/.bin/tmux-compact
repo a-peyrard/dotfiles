@@ -1,0 +1,40 @@
+#!/bin/bash
+# Compact tmux windows — fill gaps in numbering for windows 0-39.
+# Windows numbered 40+ are left in place.
+
+set -euo pipefail
+
+if ! tmux display-message -p '#{session_id}' &>/dev/null; then
+  echo "Not in a tmux session" >&2
+  exit 1
+fi
+
+current=$(tmux display-message -p '#{window_index}')
+moved=0
+target=0
+summary=""
+
+# Capture window list before moving
+win_list=$(tmux list-windows -F '#{window_index}	#{window_name}' | sort -n)
+
+while IFS=$'\t' read -r idx name; do
+  [ "$idx" -ge 40 ] && break
+
+  if [ "$idx" -gt "$target" ]; then
+    tmux move-window -s ":$idx" -t ":$target"
+    summary+="  ${idx} → ${target}  ${name}\n"
+    [ "$idx" -eq "$current" ] && current=$target
+    moved=$((moved + 1))
+  fi
+
+  target=$((target + 1))
+done <<< "$win_list"
+
+tmux select-window -t ":$current"
+
+if [ "$moved" -eq 0 ]; then
+  echo "Already compact."
+else
+  echo "Moved $moved window(s):"
+  echo -e "$summary"
+fi
