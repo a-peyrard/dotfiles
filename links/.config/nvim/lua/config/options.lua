@@ -124,17 +124,20 @@ vim.opt.listchars = {
 }
 
 -- Comments: bright purple, distinct from inlay hints
-vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0" })
+vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0", bold = true })
 
 -- Bold code text (IntelliJ-like readability)
 local bold_groups = {
-  "@variable", "@variable.parameter", "@variable.member",
-  "@function", "@function.call", "@function.method",
+  "@variable", "@variable.parameter", "@variable.member", "@variable.builtin",
+  "@function", "@function.call", "@function.method", "@function.builtin",
   "@keyword", "@keyword.import", "@keyword.function",
   "@keyword.conditional", "@keyword.repeat", "@keyword.modifier",
   "@type", "@type.builtin",
-  "@string", "@number", "@operator", "@punctuation",
+  "@string", "@string.escape", "@string.special",
+  "@number", "@operator", "@punctuation",
   "@property", "@constructor", "@boolean",
+  "@constant", "@constant.builtin", "@constant.macro",
+  "@module", "@attribute", "@character", "@character.special", "@label",
   "Identifier", "Statement", "Type", "String", "Constant",
 }
 for _, group in ipairs(bold_groups) do
@@ -225,7 +228,7 @@ vim.api.nvim_create_autocmd("ColorScheme", {
       vim.api.nvim_set_hl(0, group, hl)
     end
     -- Comments
-    vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0" })
+    vim.api.nvim_set_hl(0, "Comment", { fg = "#d070d0", bold = true })
     -- Inlay hints
     vim.api.nvim_set_hl(0, "LspInlayHint", { fg = "#4a5272", italic = true, bg = "NONE" })
     -- Diagnostic sign highlights
