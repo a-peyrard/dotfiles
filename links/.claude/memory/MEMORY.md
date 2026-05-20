@@ -15,6 +15,9 @@
 - [Clean up erepo clones](feedback_erepo_cleanup.md) — always `erepo rm` after work is done; stale clones waste resources
 - [Use ascii-art-fix for diagrams](feedback_ascii_art_verify.md) — run `ascii-art-fix verify/fix` after every diagram edit; handles emoji widths
 
+## Source Control
+- [Never amend landed diffs](feedback_never_amend_landed_diffs.md) — always create a fresh diff on a new bookmark; landed commits can't be amended
+
 ## Agent Discipline
 - [Don't clock out](feedback_no_clocking.md) — never suggest stopping unless the user asks; complexity is not a reason to defer
 - [Tests aren't gospel](feedback_tests_arent_gospel.md) — passing tests don't prove correct design; check if tests validate intent or side-effects
