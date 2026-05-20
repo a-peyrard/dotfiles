@@ -732,6 +732,22 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
                 else
                     REPO_ROOT=$(sl root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || echo "$HOME")
                 fi
+                if $FULL_SCREEN; then
+                    # Full-screen: exec nvim with review command baked in
+                    # (ensure_nvim_running uses exec, so RPC after it never runs)
+                    review_cmd="ReviewDiff"
+                    [ -n "$DIFF_ID" ] && review_cmd="ReviewDiff ${DIFF_ID}"
+                    [ -n "$DIFF_ID" ] && [ -n "$REVIEW_REPO" ] && review_cmd="ReviewDiff ${DIFF_ID} ${REVIEW_REPO}"
+                    if [ -z "$SESSION_ID" ]; then
+                        SESSION_ID=$(generate_session_id)
+                        SOCK="/tmp/nvim-claude-${USER}-${SESSION_ID}.sock"
+                    fi
+                    echo "$SESSION_ID" > "/tmp/nvc-me-${TMUX_PANE}"
+                    echo "${TMUX_PANE}" > "/tmp/nvc-claude-${SESSION_ID}"
+                    cd "$REPO_ROOT"
+                    echo "Reviewing ${DIFF_ID:-picker}" >&2
+                    exec nvim --listen "$SOCK" -c "autocmd VimEnter * ++once ${review_cmd}"
+                fi
                 ensure_nvim_running
                 nvim --server "$SOCK" --remote-send "<Esc>:cd ${REPO_ROOT}<CR>"
                 if [ -n "$DIFF_ID" ]; then
