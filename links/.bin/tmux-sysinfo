@@ -1,0 +1,20 @@
+#!/bin/bash
+# Load average + memory usage for tmux status-right
+
+# Load average (1min)
+if [ -f /proc/loadavg ]; then
+  load=$(cut -d' ' -f1 /proc/loadavg)
+else
+  load=$(sysctl -n vm.loadavg | awk '{print $2}')
+fi
+
+# Memory: used/total
+if [ -f /proc/meminfo ]; then
+  mem=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%dG/%dG", (t-a)/1048576, t/1048576}' /proc/meminfo)
+else
+  total=$(($(sysctl -n hw.memsize) / 1073741824))
+  used=$(vm_stat | awk '/Pages (active|wired down|occupied by compressor)/{gsub(/\./,"",$NF); s+=$NF} END{printf "%d", s*4096/1073741824}')
+  mem=$(printf "%dG/%dG" "$used" "$total")
+fi
+
+printf "%s ↑%s" "$mem" "$load"
