@@ -18,5 +18,6 @@ to sessions in other working directories.
 2. For each one, ask: "Is this project-specific or universal?"
 3. Universal ones (workflow, preferences, tool usage) → move to `~/.claude/memory/`
 4. Project-specific ones (code details, contacts, decisions) → keep in project directory
+5. After promoting, **delete the project-level copy** and remove its entry from the project MEMORY.md — both MEMORY.md files are loaded into context, so duplicates waste tokens
 
 TODO: Add this as a step in the `/session-debrief` skill definition.
