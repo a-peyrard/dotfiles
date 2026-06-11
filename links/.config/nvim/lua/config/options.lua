@@ -113,6 +113,9 @@ vim.opt.diffopt:append("inline:char")   -- Character-level inline diff (Neovim 0
 vim.opt.diffopt:append("linematch:60")  -- Better line matching algorithm
 vim.opt.diffopt:append("context:99999") -- Show all lines (no folding)
 
+-- Diff filler lines: blank space with subtle background (no dashes)
+vim.opt.fillchars:append("diff: ")
+
 -- Show invisible characters (IntelliJ-style subtle display)
 vim.opt.list = false
 vim.opt.listchars = {
@@ -163,9 +166,11 @@ vim.api.nvim_set_hl(0, "GitSignsDeleteNr", { fg = "#e06c75", bg = "NONE" })
 -- Diff highlights (tokyonight defaults are too subtle with transparent mode)
 local function apply_diff_highlights()
   vim.api.nvim_set_hl(0, "DiffAdd", { bg = "#1a3320" })       -- pastel green (added)
-  vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#331a1a" })    -- pastel red (deleted)
+  vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#1a1a2e" })    -- subtle dark (filler lines in diff mode)
   vim.api.nvim_set_hl(0, "DiffChange", { bg = "#2d2d1a" })    -- pastel yellow (changed lines)
   vim.api.nvim_set_hl(0, "DiffText", { bg = "#5a4a20" })      -- warm yellow (changed text)
+  vim.api.nvim_set_hl(0, "DiffviewDiffDeleteDim", { bg = "#1a1a2e" })  -- diffview filler
+  vim.api.nvim_set_hl(0, "DiffviewDiffAddAsDelete", { bg = "#331a1a" }) -- diffview actual deletes
 end
 apply_diff_highlights()
 
