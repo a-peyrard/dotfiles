@@ -62,7 +62,10 @@ CACHE_DIR = Path.home() / ".cache" / "claude-sessions"
 UNREAD_FILE = CACHE_DIR / "unread.json"
 UNREAD_PROTECTED_FILE = CACHE_DIR / "unread-protected.json"
 UNREAD_DWELL_FILE = CACHE_DIR / "unread-dwell.json"
+UNREAD_STALE_FILE = CACHE_DIR / "unread-stale-misses.json"
 PREV_STATE_FILE = CACHE_DIR / "statusbar-prev.json"
+
+STALE_MISS_THRESHOLD = 3
 
 DWELL_SECONDS = 2.0
 LOG_FILE = CACHE_DIR / "unread.log"
@@ -170,7 +173,8 @@ def get_live_panes():
                     pass
                 pane_to_target[pane_id] = target
         return live, pane_to_window, pane_to_target
-    except Exception:
+    except Exception as e:
+        _log(f"ERR get_live_panes failed: {e}")
         return set(), {}, {}
 
 
@@ -265,6 +269,9 @@ def main():
 
     pid_dir = STATE_BASE_DIR / str(tmux_pid)
     live_panes, pane_to_window, pane_to_target = get_live_panes()
+    if not live_panes:
+        _log("SKIP poll (get_live_panes returned empty)")
+        return
     all_windows = get_all_window_indices()
 
     # Collect state files, dedup by pane_id (keep newest)
@@ -359,13 +366,38 @@ def main():
                 dwell_changed = True
                 _log(f"DWELL- {target} (user left window)")
 
-    # Clean stale targets
-    current_targets = {pane_to_target.get(pid, pid) for pid in agents}
-    stale = unread_targets - current_targets
-    if stale:
-        unread_targets -= stale
+    # Clean stale targets: only remove unread entries whose pane has been missing
+    # for multiple consecutive polls. A single miss can happen during tmux client
+    # reconnection — require STALE_MISS_THRESHOLD consecutive misses before cleanup.
+    live_targets = {pane_to_target.get(pid, pid) for pid in live_panes}
+    missing_now = unread_targets - live_targets
+    stale_misses = load_json(UNREAD_STALE_FILE) or {}
+    stale_misses_changed = False
+
+    for target in list(stale_misses.keys()):
+        if target not in missing_now:
+            del stale_misses[target]
+            stale_misses_changed = True
+
+    confirmed_stale = set()
+    for target in missing_now:
+        count = stale_misses.get(target, 0) + 1
+        stale_misses[target] = count
+        stale_misses_changed = True
+        if count == 1:
+            _log(f"STALE-MISS {target} (miss 1/{STALE_MISS_THRESHOLD}, live_panes={len(live_panes)}, live_targets={len(live_targets)})")
+        if count >= STALE_MISS_THRESHOLD:
+            confirmed_stale.add(target)
+
+    if confirmed_stale:
+        unread_targets -= confirmed_stale
         unread_changed = True
-        _log(f"UNREAD- {stale} (stale targets, not in current agents)")
+        for target in confirmed_stale:
+            stale_misses.pop(target, None)
+        _log(f"UNREAD- {confirmed_stale} (pane missing for {STALE_MISS_THRESHOLD}+ polls)")
+
+    if stale_misses_changed:
+        save_json(UNREAD_STALE_FILE, stale_misses)
 
     # Persist
     save_json(PREV_STATE_FILE, new_prev_states)
