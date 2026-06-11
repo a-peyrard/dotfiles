@@ -53,7 +53,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     echo "       nvc diff-review <file>                    Interactive diff review (stdin)"
     echo "       nvc diagnostics [file]                    Get LSP diagnostics"
     echo "       nvc buffers                               List open buffers"
-    echo "       nvc notes [clear|remove <file:line>]      Read/manage review notes"
+    echo "       nvc notes [clear|remove <id>]             Read/manage review notes"
     echo "       nvc sessions                              List all nvim sessions"
     echo "       nvc clean                                 Remove stale session files"
     echo "       nvc restart                               Restart nvim (preserve state)"
@@ -488,18 +488,14 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
 
         if [ "$SUBCMD" = "remove" ]; then
             shift
-            LOCATION="${1:-}"
-            if [ -z "$LOCATION" ]; then
-                echo "Usage: nvc notes remove <file>:<line>" >&2
+            NOTE_ID="${1:-}"
+            if [ -z "$NOTE_ID" ]; then
+                echo "Usage: nvc notes remove <id>" >&2
                 exit 1
             fi
-            FILE="${LOCATION%:*}"
-            LINE="${LOCATION##*:}"
-            # Resolve to absolute path
-            [[ "$FILE" != /* ]] && FILE="$(pwd)/$FILE"
             if socket_alive; then
-                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.Notes.remove('${FILE}', ${LINE})<CR>"
-                echo "Removed note at ${LOCATION}" >&2
+                nvim --server "$SOCK" --remote-send "<Esc>:lua _G.Notes.remove(${NOTE_ID})<CR>"
+                echo "Removed note ${NOTE_ID}" >&2
             else
                 echo "No nvim instance running" >&2
             fi
@@ -692,9 +688,9 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
             for f in "${CHANGED_FILES[@]}"; do
                 EDIT_CMDS="${EDIT_CMDS} | badd ${f}"
             done
-            # Open the last file as the active buffer
+            # Open the last file as the active buffer, wipe the startup scratch buffer
             if [ ${#CHANGED_FILES[@]} -gt 0 ]; then
-                EDIT_CMDS="${EDIT_CMDS} | edit ${CHANGED_FILES[-1]}"
+                EDIT_CMDS="${EDIT_CMDS} | edit ${CHANGED_FILES[-1]} | lua if vim.fn.bufname(1)=='' and not vim.bo[1].modified then vim.cmd('silent! bwipeout 1') end"
             fi
             nvim --server "$SOCK" --remote-send "<Esc>:${EDIT_CMDS}<CR>"
 
