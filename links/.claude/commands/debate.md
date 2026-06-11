@@ -257,6 +257,27 @@ After all rounds are complete (or early stop):
    - "Let me review first" → wait
    The debate produces recommendations. The user decides what ships. All-GREEN convergence is NOT automatic approval.
 
+### Step 12: Point-by-Point Review (Optional)
+
+After presenting the summary, ask the user: **"Want to review the changes point by point?"**
+
+If yes, walk through each change from the TL;DR list one at a time. For each change:
+
+1. **State the change** — what was added/removed/modified
+2. **Motivation** — what problem it solves, with a concrete example of what would break without it
+3. **Who pushed for it** — which persona(s) raised the concern, in which round
+4. **Opposition** — if any persona argued against it, summarize their counterargument and how it was resolved
+5. **Impact** — what this means for implementation (new file, modified file, new convention, etc.)
+
+Then ask: **"Accept, skip, or modify?"**
+- **Accept** — change stays in the final plan
+- **Skip** — change removed from the final plan
+- **Modify** — user describes what they want different, master adjusts
+
+After going through all points, write the cherry-picked final plan (only accepted changes) to `/tmp/swarm/<debate-id>/plan-v<last>-accepted.md` and copy to the project docs.
+
+If the user says "accept all" at any point during the review, stop iterating and accept remaining changes.
+
 ## Rules
 
 - Always re-select the master pane after tmux operations: `tmux select-pane -t <master-pane-id>`
