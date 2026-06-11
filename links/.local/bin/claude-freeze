@@ -1,0 +1,132 @@
+#!/bin/bash
+# claude-freeze — Capture all Claude sessions before reboot for later resumption
+#
+# Reads claude-state files + unread state, resolves tmux pane targets to
+# window_name:pane_index (stable across tmux-resurrect), writes a manifest.
+#
+# Usage: claude-freeze [--dry-run]
+set -euo pipefail
+
+FREEZE_FILE="$HOME/.cache/claude-sessions/frozen.json"
+STATE_BASE="$HOME/.claude-sessions/state"
+UNREAD_FILE="$HOME/.cache/claude-sessions/unread.json"
+
+die() { echo "claude-freeze: $1" >&2; exit 1; }
+info() { echo "claude-freeze: $1" >&2; }
+
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true; shift ;;
+        -h|--help)
+            echo "Usage: claude-freeze [--dry-run]"
+            echo ""
+            echo "Capture all running Claude sessions before a reboot."
+            echo "Saves session IDs, pane locations, and unread state to a manifest"
+            echo "that claude-thaw uses to resume sessions after tmux-resurrect."
+            echo ""
+            echo "Options:"
+            echo "  --dry-run   Show what would be frozen without writing"
+            echo ""
+            echo "Manifest: $FREEZE_FILE"
+            exit 0
+            ;;
+        *) die "unknown flag: $1" ;;
+    esac
+done
+
+TMUX_PID=$(tmux display-message -p '#{pid}' 2>/dev/null) || die "not in tmux"
+STATE_DIR="$STATE_BASE/$TMUX_PID"
+[[ -d "$STATE_DIR" ]] || die "no state dir: $STATE_DIR"
+
+# Build session_id → cwd lookup from Claude's own session files
+CLAUDE_SESSIONS_DIR="$HOME/.claude/sessions"
+declare -A session_cwd
+if [[ -d "$CLAUDE_SESSIONS_DIR" ]]; then
+    for csf in "$CLAUDE_SESSIONS_DIR"/*.json; do
+        [[ -f "$csf" ]] || continue
+        sid=$(jq -r '.sessionId // empty' "$csf" 2>/dev/null) || continue
+        cwd=$(jq -r '.cwd // empty' "$csf" 2>/dev/null) || continue
+        [[ -n "$sid" && -n "$cwd" ]] && session_cwd["$sid"]="$cwd"
+    done
+    info "loaded cwd for ${#session_cwd[@]} sessions from Claude session files"
+fi
+
+unread_targets=$(cat "$UNREAD_FILE" 2>/dev/null || echo "[]")
+
+sessions="[]"
+count=0
+skipped=0
+
+for state_file in "$STATE_DIR"/*.json; do
+    [[ -f "$state_file" ]] || continue
+
+    session_id=$(jq -r '.session_id' "$state_file")
+    pane_id=$(jq -r '.pane_id' "$state_file")
+    status=$(jq -r '.status' "$state_file")
+
+    pane_info=$(tmux display-message -t "$pane_id" \
+        -p '#{window_name}	#{window_index}	#{pane_index}	#{session_name}' \
+        2>/dev/null) || {
+        info "skip $session_id — pane $pane_id gone"
+        skipped=$((skipped + 1))
+        continue
+    }
+
+    IFS=$'\t' read -r window_name window_index pane_index tmux_session <<< "$pane_info"
+
+    if [[ -z "$window_index" || -z "$pane_index" ]]; then
+        info "skip ${session_id:0:8} — pane $pane_id stale (empty tmux fields)"
+        skipped=$((skipped + 1))
+        continue
+    fi
+
+    target="${tmux_session}:${window_index}.${pane_index}"
+    is_unread=$(echo "$unread_targets" | jq --arg t "$target" 'index($t) != null')
+    cwd="${session_cwd[$session_id]:-}"
+
+    sessions=$(echo "$sessions" | jq \
+        --arg sid "$session_id" \
+        --arg wn "$window_name" \
+        --argjson wi "$window_index" \
+        --argjson pi "$pane_index" \
+        --arg ts "$tmux_session" \
+        --arg st "$status" \
+        --argjson ur "$is_unread" \
+        --arg cwd "$cwd" \
+        '. + [{
+            session_id: $sid,
+            window_name: $wn,
+            window_index: $wi,
+            pane_index: $pi,
+            tmux_session: $ts,
+            status: $st,
+            unread: $ur,
+            cwd: (if $cwd == "" then null else $cwd end)
+        }]')
+
+    count=$((count + 1))
+done
+
+if [[ $count -eq 0 ]]; then
+    info "no sessions found to freeze"
+    exit 0
+fi
+
+manifest=$(jq -n \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson tp "$TMUX_PID" \
+    --argjson sessions "$sessions" \
+    '{frozen_at: $ts, tmux_pid: $tp, sessions: $sessions}')
+
+if $DRY_RUN; then
+    info "DRY RUN — would freeze $count sessions ($skipped skipped):"
+else
+    mkdir -p "$(dirname "$FREEZE_FILE")"
+    echo "$manifest" > "$FREEZE_FILE"
+    info "frozen $count sessions ($skipped skipped) → $FREEZE_FILE"
+fi
+
+echo "$manifest" | jq -r '.sessions | sort_by(.window_index, .pane_index)[] |
+    "  \(.tmux_session):\(.window_index).\(.pane_index) \(.window_name) [\(.status)] \(.session_id[0:8])\(if .unread then " (unread)" else "" end)"'

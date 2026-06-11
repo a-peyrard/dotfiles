@@ -1,0 +1,154 @@
+#!/bin/bash
+# claude-thaw — Resume frozen Claude sessions after reboot + tmux-resurrect
+#
+# Reads the manifest from claude-freeze, matches window_name:pane_index to
+# current tmux panes, and sends 'claude --resume <id>' into each.
+# Staggers launches to avoid load spikes.
+#
+# Usage: claude-thaw [--dry-run] [--delay SECS] [--no-stagger]
+set -euo pipefail
+
+FREEZE_FILE="$HOME/.cache/claude-sessions/frozen.json"
+UNREAD_FILE="$HOME/.cache/claude-sessions/unread.json"
+ARCHIVE_DIR="$HOME/.cache/claude-sessions/frozen-archive"
+
+die() { echo "claude-thaw: $1" >&2; exit 1; }
+info() { echo "claude-thaw: $1" >&2; }
+
+DRY_RUN=false
+DELAY=5
+STAGGER=true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=true; shift ;;
+        --delay) DELAY="$2"; shift 2 ;;
+        --no-stagger) STAGGER=false; shift ;;
+        -h|--help)
+            echo "Usage: claude-thaw [--dry-run] [--delay SECS] [--no-stagger]"
+            echo ""
+            echo "Resume Claude sessions captured by claude-freeze after a reboot."
+            echo "Matches frozen sessions to tmux panes by window name + pane index."
+            echo ""
+            echo "Options:"
+            echo "  --dry-run      Show what would be resumed without doing it"
+            echo "  --delay SECS   Seconds between launches (default: 5)"
+            echo "  --no-stagger   Launch all at once (not recommended)"
+            echo ""
+            echo "Manifest: $FREEZE_FILE"
+            exit 0
+            ;;
+        *) die "unknown flag: $1" ;;
+    esac
+done
+
+[[ -f "$FREEZE_FILE" ]] || die "no frozen sessions — run claude-freeze first"
+
+manifest=$(cat "$FREEZE_FILE")
+frozen_at=$(echo "$manifest" | jq -r '.frozen_at')
+session_count=$(echo "$manifest" | jq '.sessions | length')
+
+info "manifest from $frozen_at — $session_count sessions"
+
+# Resolve cwd for a session_id from Claude's conversation logs
+resolve_cwd() {
+    local sid="$1"
+    local match cwd
+    match=$(find "$HOME/.claude/projects" -name "${sid}.jsonl" 2>/dev/null | head -1)
+    [[ -z "$match" ]] && return
+    cwd=$(grep -m1 '"cwd"' "$match" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null)
+    [[ -n "$cwd" ]] && echo "$cwd"
+}
+
+# Build a lookup: window_name → window_index (current tmux state)
+declare -A current_windows
+while IFS=$'\t' read -r wname widx; do
+    current_windows["$wname"]="$widx"
+done < <(tmux list-windows -a -F '#{window_name}	#{session_name}:#{window_index}' 2>/dev/null)
+
+restored=0
+failed=0
+unread_new=()
+
+while IFS= read -r entry; do
+    session_id=$(echo "$entry" | jq -r '.session_id')
+    window_name=$(echo "$entry" | jq -r '.window_name')
+    window_index=$(echo "$entry" | jq -r '.window_index')
+    pane_index=$(echo "$entry" | jq -r '.pane_index')
+    tmux_session=$(echo "$entry" | jq -r '.tmux_session')
+    is_unread=$(echo "$entry" | jq -r '.unread')
+    status=$(echo "$entry" | jq -r '.status')
+    cwd=$(echo "$entry" | jq -r '.cwd // empty')
+    [[ -z "$cwd" ]] && cwd=$(resolve_cwd "$session_id")
+
+    # Strategy 1: exact position (session:window_index.pane_index)
+    target="${tmux_session}:${window_index}.${pane_index}"
+    actual_name=$(tmux display-message -t "$target" -p '#{window_name}' 2>/dev/null) || actual_name=""
+
+    if [[ "$actual_name" != "$window_name" ]]; then
+        # Strategy 2: find window by name, use same pane index
+        if [[ -n "${current_windows[$window_name]:-}" ]]; then
+            target="${current_windows[$window_name]}.${pane_index}"
+            actual_name=$(tmux display-message -t "$target" -p '#{window_name}' 2>/dev/null) || actual_name=""
+        fi
+    fi
+
+    if [[ "$actual_name" != "$window_name" ]]; then
+        info "SKIP ${session_id:0:8} — window '$window_name' not found"
+        failed=$((failed + 1))
+        continue
+    fi
+
+    # Check pane is ready (shell prompt, not already running something)
+    fg_cmd=$(tmux display-message -t "$target" -p '#{pane_current_command}' 2>/dev/null) || fg_cmd=""
+    case "$fg_cmd" in
+        bash|zsh|sh|fish) ;;
+        *)
+            info "SKIP ${session_id:0:8} — pane $target running '$fg_cmd', not a shell"
+            failed=$((failed + 1))
+            continue
+            ;;
+    esac
+
+    if $DRY_RUN; then
+        info "  would resume ${session_id:0:8} in $target ($window_name:$pane_index) [was: $status]$([ "$is_unread" = "true" ] && echo " (unread)")$([ -n "$cwd" ] && echo " cwd=$cwd")"
+    else
+        if [[ -n "$cwd" && -d "$cwd" ]]; then
+            tmux send-keys -t "$target" "cd $(printf '%q' "$cwd") && claude --resume $session_id" Enter
+        else
+            tmux send-keys -t "$target" "claude --resume $session_id" Enter
+            [[ -n "$cwd" ]] && info "    (cwd $cwd no longer exists, resuming from current dir)"
+        fi
+        info "  ✓ $window_name:$pane_index → ${session_id:0:8} [was: $status]$([ -n "$cwd" ] && echo " cwd=$cwd")"
+
+        if [[ "$is_unread" == "true" ]]; then
+            unread_new+=("$target")
+        fi
+
+        restored=$((restored + 1))
+
+        if $STAGGER && [[ $restored -lt $session_count ]]; then
+            sleep "$DELAY"
+        fi
+    fi
+done < <(echo "$manifest" | jq -c '.sessions | sort_by(.window_index, .pane_index)[]')
+
+if ! $DRY_RUN; then
+    # Restore unread state
+    if [[ ${#unread_new[@]} -gt 0 ]]; then
+        mkdir -p "$(dirname "$UNREAD_FILE")"
+        printf '%s\n' "${unread_new[@]}" | jq -R . | jq -s . > "$UNREAD_FILE"
+        info "restored ${#unread_new[@]} unread markers"
+    fi
+
+    # Archive the freeze manifest
+    mkdir -p "$ARCHIVE_DIR"
+    mv "$FREEZE_FILE" "$ARCHIVE_DIR/frozen.$(date +%Y%m%d-%H%M%S).json"
+
+    info "done: $restored resumed, $failed skipped"
+    if [[ $restored -gt 0 ]]; then
+        info "sessions are starting — give them ~30s to initialize"
+    fi
+else
+    info "DRY RUN — $((session_count - failed)) would resume, $failed would skip"
+fi
