@@ -48,6 +48,10 @@ pkg_install "cliclick" ${dry_run}
 pkg_add_tap "nikitabobko/tap" ${dry_run}
 pkg_install_cask "nikitabobko/tap/aerospace" ${dry_run}
 
+# Window borders (JankyBorders — started by AeroSpace's after-startup-command)
+pkg_add_tap "FelixKratz/formulae" ${dry_run}
+pkg_install "borders" ${dry_run}
+
 # Eternal Terminal (from MisterTea/et tap)
 if [[ ${dry_run} == 1 ]]; then
 	echo "(DRY RUN) brew install MisterTea/et/et"
