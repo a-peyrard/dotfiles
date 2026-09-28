@@ -34,7 +34,6 @@ echo "Installing macOS-specific packages and applications..."
 
 # Add Homebrew taps
 pkg_add_tap "bramstein/webfonttools" ${dry_run}
-pkg_add_tap "MisterTea/et" ${dry_run}
 
 # Font tools
 pkg_install "sfnt2woff" ${dry_run}
@@ -52,16 +51,9 @@ pkg_install_cask "nikitabobko/tap/aerospace" ${dry_run}
 pkg_add_tap "FelixKratz/formulae" ${dry_run}
 pkg_install "borders" ${dry_run}
 
-# Eternal Terminal (from MisterTea/et tap)
-if [[ ${dry_run} == 1 ]]; then
-	echo "(DRY RUN) brew install MisterTea/et/et"
-else
-	if ! brew list et &>/dev/null; then
-		brew install MisterTea/et/et
-	else
-		echo " ⏩ skip ${bold}et${normal}, already installed"
-	fi
-fi
+# Eternal Terminal: a supported build (7.0.0+1) is preinstalled at /usr/local/bin/et.
+# Do NOT install from the MisterTea tap — it is pinned at 6.2.11 and
+# shadows that build on PATH, which breaks the ssh wrappers that use it.
 
 # Network tools (macOS only)
 pkg_install "nmap" ${dry_run}
