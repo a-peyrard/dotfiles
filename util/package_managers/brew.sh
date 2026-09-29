@@ -2,21 +2,20 @@
 # Homebrew Package Manager Implementation (macOS)
 # Contract: update, upgrade, install, is_installed, cleanup, install_cask, add_tap
 
-# Package name mappings: requested_name → homebrew_name
+# Get package name for this package manager
 # Use "-" to skip package on this platform
 # Only non-identity mappings are listed; unmapped packages use their requested name
-declare -A PKG_MAP=(
-  # Git tools (different package name)
-  ["delta"]="git-delta"
-)
-
-# Get package name for this package manager
+#
+# NOTE: macOS ships bash 3.2, which has no associative arrays — hence case
+# rather than the PKG_MAP used by apt.sh/dnf.sh.
 pkg_get_name() {
   local requested="$1"
-  local mapped="${PKG_MAP[$requested]}"
 
-  # If no mapping, use requested name
-  [ -z "$mapped" ] && echo "$requested" || echo "$mapped"
+  case "$requested" in
+    # Git tools (different package name)
+    delta) echo "git-delta" ;;
+    *)     echo "$requested" ;;
+  esac
 }
 
 # Check if package should be skipped
