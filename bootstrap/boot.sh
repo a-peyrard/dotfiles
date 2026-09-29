@@ -61,19 +61,13 @@ record_run() {
 
 # Collect boot scripts from subdirectories with override logic
 # Priority: OS-specific > common
+#
+# NOTE: macOS ships bash 3.2, which has no associative arrays. Dedup by
+# filename is done with awk instead.
 collect_boot_scripts() {
-  local -A script_paths  # Associative array: filename -> full_path
-
-  # First, collect from common/
-  if [ -d "${boot_scripts_dir}/common" ]; then
-    while IFS= read -r script; do
-      local filename=$(basename "$script")
-      script_paths["$filename"]="$script"
-    done < <(find "${boot_scripts_dir}/common" -maxdepth 1 -name "*.sh" -type f)
-  fi
-
-  # Then, collect from OS-specific directory (override common if same name)
   local os_dir=""
+  local distro_dir=""
+
   if [ "$OS_TYPE" = "macos" ]; then
     os_dir="${boot_scripts_dir}/macos"
   elif [ "$OS_TYPE" = "linux" ]; then
@@ -81,24 +75,20 @@ collect_boot_scripts() {
 
     # Also check for distro-specific (e.g., linux_centos/)
     if [ -n "$DISTRO" ] && [ -d "${boot_scripts_dir}/linux_${DISTRO}" ]; then
-      while IFS= read -r script; do
-        local filename=$(basename "$script")
-        script_paths["$filename"]="$script"
-      done < <(find "${boot_scripts_dir}/linux_${DISTRO}" -maxdepth 1 -name "*.sh" -type f)
+      distro_dir="${boot_scripts_dir}/linux_${DISTRO}"
     fi
   fi
 
-  if [ -n "$os_dir" ] && [ -d "$os_dir" ]; then
-    while IFS= read -r script; do
-      local filename=$(basename "$script")
-      script_paths["$filename"]="$script"  # Override if exists
-    done < <(find "$os_dir" -maxdepth 1 -name "*.sh" -type f)
-  fi
-
-  # Output sorted by filename (numeric ordering works naturally)
-  for filename in $(echo "${!script_paths[@]}" | tr ' ' '\n' | sort); do
-    echo "${script_paths[$filename]}"
-  done
+  # Emit candidates in increasing priority order, keep the last path seen
+  # per filename, then sort by filename (numeric prefixes order naturally).
+  {
+    [ -d "${boot_scripts_dir}/common" ] && find "${boot_scripts_dir}/common" -maxdepth 1 -name "*.sh" -type f
+    [ -n "$distro_dir" ] && find "$distro_dir" -maxdepth 1 -name "*.sh" -type f
+    [ -n "$os_dir" ] && [ -d "$os_dir" ] && find "$os_dir" -maxdepth 1 -name "*.sh" -type f
+  } | awk -F/ '{ print $NF "\t" $0 }' \
+    | awk -F'\t' '{ seen[$1] = $2 } END { for (f in seen) print f "\t" seen[f] }' \
+    | sort \
+    | cut -f2-
 }
 
 for boot_script in $(collect_boot_scripts); do
