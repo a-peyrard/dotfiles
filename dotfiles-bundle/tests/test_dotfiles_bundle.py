@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import types
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -54,6 +55,8 @@ _prompt_new_file_placement = dotfiles_bundle._prompt_new_file_placement
 glob_match = dotfiles_bundle.glob_match
 deep_merge = dotfiles_bundle.deep_merge
 format_size = dotfiles_bundle.format_size
+read_last_sync = dotfiles_bundle.read_last_sync
+bundle_sync_status = dotfiles_bundle.bundle_sync_status
 BundleConfig = dotfiles_bundle.BundleConfig
 BundleResolver = dotfiles_bundle.BundleResolver
 FileResolver = dotfiles_bundle.FileResolver
@@ -1856,3 +1859,141 @@ class TestPlaceNewRemoteFiles:
         # THEN — a.txt skipped, b.txt placed
         assert "a.txt" not in placed
         assert "b.txt" in placed
+
+
+# ============================================================================
+# Sync Status
+# ============================================================================
+
+
+class TestReadLastSync:
+    """Tests for reading the last entry of a bundle's deploy/pull log."""
+
+    def _write_log(self, bundles_dir: Path, bundle: str, content: str) -> None:
+        bundle_dir = bundles_dir / bundle
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / ".deploy.log").write_text(content)
+
+    def test_read_last_sync_should_return_none_when_log_missing(self, mock_repo):
+        # GIVEN a bundle directory with no deploy log
+        (mock_repo.bundles_dir / "dev-server").mkdir(parents=True, exist_ok=True)
+
+        # WHEN
+        result = read_last_sync("dev-server", bundles_dir=mock_repo.bundles_dir)
+
+        # THEN
+        assert result is None
+
+    def test_read_last_sync_should_return_none_when_log_empty(self, mock_repo):
+        # GIVEN an empty deploy log
+        self._write_log(mock_repo.bundles_dir, "dev-server", "")
+
+        # WHEN
+        result = read_last_sync("dev-server", bundles_dir=mock_repo.bundles_dir)
+
+        # THEN
+        assert result is None
+
+    def test_read_last_sync_should_return_timestamp_and_action_of_last_entry(self, mock_repo):
+        # GIVEN a log with several entries
+        self._write_log(
+            mock_repo.bundles_dir,
+            "dev-server",
+            "2026-05-18 04:14:30  deploy    1 file(s) synced\n"
+            "2026-06-01 18:46:46  sync      11 pulled, 8 new file(s) placed\n",
+        )
+
+        # WHEN
+        result = read_last_sync("dev-server", bundles_dir=mock_repo.bundles_dir)
+
+        # THEN
+        assert result is not None
+        when, action = result
+        assert when.strftime("%Y-%m-%d %H:%M:%S") == "2026-06-01 18:46:46"
+        assert action == "sync"
+
+    def test_read_last_sync_should_skip_malformed_trailing_lines(self, mock_repo):
+        # GIVEN a log whose final lines are blank or unparseable
+        self._write_log(
+            mock_repo.bundles_dir,
+            "dev-server",
+            "2026-06-01 18:46:46  sync      11 pulled\n"
+            "not-a-timestamp  garbage\n"
+            "\n",
+        )
+
+        # WHEN
+        result = read_last_sync("dev-server", bundles_dir=mock_repo.bundles_dir)
+
+        # THEN the last *parseable* entry wins
+        assert result is not None
+        when, action = result
+        assert when.strftime("%Y-%m-%d") == "2026-06-01"
+        assert action == "sync"
+
+
+class TestBundleSyncStatus:
+    """Tests for computing sync freshness of a bundle."""
+
+    def _write_log(self, bundles_dir: Path, bundle: str, content: str) -> None:
+        bundle_dir = bundles_dir / bundle
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / ".deploy.log").write_text(content)
+
+    def test_bundle_sync_status_should_report_days_since_last_sync(self, mock_repo):
+        # GIVEN a sync 121 days before "now"
+        self._write_log(
+            mock_repo.bundles_dir, "dev-server", "2026-06-01 18:46:46  sync      11 pulled\n"
+        )
+        now = datetime(2026, 9, 30, 18, 46, 46, tzinfo=timezone.utc)
+
+        # WHEN
+        status = bundle_sync_status("dev-server", bundles_dir=mock_repo.bundles_dir, now=now)
+
+        # THEN
+        assert status.days_ago == 121
+        assert status.action == "sync"
+
+    def test_bundle_sync_status_should_flag_stale_when_beyond_threshold(self, mock_repo):
+        # GIVEN a sync older than the staleness threshold
+        self._write_log(
+            mock_repo.bundles_dir, "dev-server", "2026-06-01 00:00:00  sync      11 pulled\n"
+        )
+        now = datetime(2026, 6, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+        # WHEN
+        status = bundle_sync_status(
+            "dev-server", bundles_dir=mock_repo.bundles_dir, now=now, stale_after_days=14
+        )
+
+        # THEN
+        assert status.stale is True
+
+    def test_bundle_sync_status_should_not_flag_fresh_sync_as_stale(self, mock_repo):
+        # GIVEN a sync well inside the threshold
+        self._write_log(
+            mock_repo.bundles_dir, "dev-server", "2026-06-01 00:00:00  sync      11 pulled\n"
+        )
+        now = datetime(2026, 6, 3, 0, 0, 0, tzinfo=timezone.utc)
+
+        # WHEN
+        status = bundle_sync_status(
+            "dev-server", bundles_dir=mock_repo.bundles_dir, now=now, stale_after_days=14
+        )
+
+        # THEN
+        assert status.stale is False
+        assert status.days_ago == 2
+
+    def test_bundle_sync_status_should_report_never_synced_when_log_missing(self, mock_repo):
+        # GIVEN a bundle that has never been deployed
+        (mock_repo.bundles_dir / "nas").mkdir(parents=True, exist_ok=True)
+        now = datetime(2026, 9, 30, tzinfo=timezone.utc)
+
+        # WHEN
+        status = bundle_sync_status("nas", bundles_dir=mock_repo.bundles_dir, now=now)
+
+        # THEN
+        assert status.last_sync is None
+        assert status.days_ago is None
+        assert status.stale is True

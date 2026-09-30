@@ -4,6 +4,7 @@ dotfiles-bundle - Bundle management for dotfiles deployment
 
 Usage:
     dotfiles-bundle list                     List available bundles and destinations
+    dotfiles-bundle status                   Show how long ago each bundle was synced
     dotfiles-bundle show <name>              Show bundle contents
     dotfiles-bundle build <name>             Build bundle tarball
     dotfiles-bundle deploy <name>            Preview deployment (--apply to deploy)
@@ -42,6 +43,7 @@ DESTINATIONS_FILE = REPO_ROOT / "destinations.private"
 MANIFEST_FILENAME = ".manifest.json"
 BACKUP_REMOTE_DIR = ".dotfiles-bundle-backup"
 MAX_BACKUPS = 5
+STALE_AFTER_DAYS = 14
 
 # ============================================================================
 # TOML Loading
@@ -1563,6 +1565,69 @@ def read_manifest(bundle_name: str) -> dict | None:
         return None
 
 
+@dataclass
+class SyncStatus:
+    """Sync freshness for a single bundle."""
+
+    bundle: str
+    last_sync: "datetime | None"
+    action: str
+    days_ago: int | None
+    stale: bool
+
+
+def _parse_log_line(line: str) -> "tuple[datetime, str] | None":
+    """Parse one '<timestamp>  <action>  <details>' log line."""
+    from datetime import datetime, timezone
+
+    stamp, _, rest = line.partition("  ")
+    try:
+        when = datetime.strptime(stamp.strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+    return when.replace(tzinfo=timezone.utc), rest.strip().split("  ")[0].strip()
+
+
+def read_last_sync(bundle_name: str, bundles_dir: Path | None = None) -> "tuple[datetime, str] | None":
+    """Return (timestamp, action) from the last parseable deploy/pull log entry."""
+    path = _log_path(bundle_name, bundles_dir)
+    if not path.exists():
+        return None
+
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+
+    for line in reversed(lines):
+        parsed = _parse_log_line(line)
+        if parsed:
+            return parsed
+
+    return None
+
+
+def bundle_sync_status(
+    bundle_name: str,
+    bundles_dir: Path | None = None,
+    now: "datetime | None" = None,
+    stale_after_days: int = STALE_AFTER_DAYS,
+) -> SyncStatus:
+    """Compute how long ago a bundle was last synced, and whether that is stale."""
+    from datetime import datetime, timezone
+
+    last = read_last_sync(bundle_name, bundles_dir)
+    if last is None:
+        return SyncStatus(bundle_name, None, "", None, True)
+
+    when, action = last
+    now = now or datetime.now(timezone.utc)
+    days_ago = (now - when).days
+
+    return SyncStatus(bundle_name, when, action, days_ago, days_ago >= stale_after_days)
+
+
 def log_operation(bundle_name: str, action: str, details: str = ""):
     """Append a line to the deploy/pull log."""
     from datetime import datetime, timezone
@@ -1714,6 +1779,36 @@ def cmd_list(args):
             info(f"{bundle.name:<12} {bundle.description}{extends_info}{target_info}{dest_info}")
     else:
         info("No bundles found. Create bundles/<name>/bundle.toml")
+    print()
+
+
+def cmd_status(args):
+    """Show how long ago each bundle with a destination was last synced."""
+    resolver = BundleResolver()
+    bundles = resolver.list_bundles()
+
+    header("Bundle sync status:")
+
+    shown = 0
+    for bundle in bundles:
+        dest = load_destination_for_bundle(bundle.name)
+        if not dest:
+            continue
+
+        shown += 1
+        status = bundle_sync_status(bundle.name, stale_after_days=args.stale_after)
+
+        if status.last_sync is None:
+            when = f"{Color.YELLOW}never synced{Color.RESET}"
+        else:
+            age = f"{status.days_ago}d ago ({status.last_sync.strftime('%Y-%m-%d')})"
+            age = f"{Color.YELLOW}{age}{Color.RESET}" if status.stale else age
+            when = f"last {status.action} {age}"
+
+        info(f"{bundle.name:<12} {when}  -> {Color.DIM}{dest.target}{Color.RESET}")
+
+    if shown == 0:
+        info("No bundles with a configured destination.")
     print()
 
 
@@ -3011,6 +3106,17 @@ def main():
     # list
     p_list = subparsers.add_parser("list", help="List available bundles")
     p_list.set_defaults(func=cmd_list)
+
+    # status
+    p_status = subparsers.add_parser("status", help="Show sync freshness per bundle")
+    p_status.add_argument(
+        "--stale-after",
+        type=int,
+        default=STALE_AFTER_DAYS,
+        metavar="DAYS",
+        help=f"Days before a bundle is flagged stale (default: {STALE_AFTER_DAYS})",
+    )
+    p_status.set_defaults(func=cmd_status)
 
     # show
     p_show = subparsers.add_parser("show", help="Show bundle contents")
