@@ -16,6 +16,7 @@ This directory is in the public dotfiles repo. Employer-specific memories live i
 - [Don't clock out](feedback_no_clocking.md) — never suggest stopping unless the user asks; complexity is not a reason to defer
 - [Tests aren't gospel](feedback_tests_arent_gospel.md) — passing tests don't prove correct design; check if tests validate intent or side-effects
 - [Verify before flagging risk](feedback_verify_before_flagging_risk.md) — read the code before asserting a risk or writing a plan item; wrong plans get executed later
+- [Backups outside /tmp](feedback_backups_outside_tmp.md) — backups for irreversible ops go somewhere persistent; macOS clears /tmp at boot
 
 ## Session Workflow
 - [Debrief should promote memories](feedback_debrief_promote_memories.md) — At debrief, review project memories and promote universal ones to global scope. TODO: add to /session-debrief skill.

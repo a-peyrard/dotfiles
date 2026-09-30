@@ -17,5 +17,6 @@ Before stating that something is risky, broken, or needs special handling — an
 - Grep or read the file before proposing to publish, un-ignore, commit or delete it — particularly anything moving into `dotfiles/`, which is public and forbids employer references.
 - When a risk is hypothesised but unverified, either verify it before writing it down, or label it explicitly as unverified in the plan.
 - When a claim turns out wrong, correct it in the plan document itself (strike it, say why) — not just in conversation. The document outlives the conversation.
+- The same applies when *executing* a handoff or plan: re-verify its recommendations before acting. On 2026-09-30 a handoff called two skills "worth versioning" in the public repo; both were employer-specific, and a "just amend one commit" fix turned out to miss a leak that was already public.
 
 Related: [[ship-shell-completions]], [[working-directory-boundary]].
