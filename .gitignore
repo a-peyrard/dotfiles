@@ -46,11 +46,7 @@ bundles/**/.deploy.log
 links/.private-bin/*
 !links/.private-bin/.gitkeep
 links/.claude/oncall-prompt.md
-links/.claude/memory/reference_gdocs_editing.md
-links/.claude/memory/feedback_bare_urls_for_ghostty.md
-links/.claude/memory/feedback_code_blocks_in_diffs.md
-links/.claude/memory/feedback_oncall_evidence.md
-links/.claude/memory/feedback_never_amend_landed_diffs.md
+links/.claude/memory/private/
 links/.claude/personas/chaic3.md
 links/.claude/personas/ai-msl.md
 links/.claude/personas/ai-dataeng.md
