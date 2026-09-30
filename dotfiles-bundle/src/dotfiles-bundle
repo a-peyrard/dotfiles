@@ -1528,9 +1528,9 @@ def _manifest_path(bundle_name: str) -> Path:
     return BUNDLES_DIR / bundle_name / MANIFEST_FILENAME
 
 
-def _log_path(bundle_name: str) -> Path:
+def _log_path(bundle_name: str, bundles_dir: Path | None = None) -> Path:
     """Return local path for the bundle's deploy/pull log."""
-    return BUNDLES_DIR / bundle_name / ".deploy.log"
+    return (bundles_dir or BUNDLES_DIR) / bundle_name / ".deploy.log"
 
 
 def write_manifest(bundle_name: str, manifest: dict) -> bool:
