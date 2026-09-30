@@ -228,6 +228,23 @@ def glob_match(pattern: str, path: str) -> bool:
     return fnmatch(path, pattern)
 
 
+def compute_deploy_excludes(
+    remote_only: list[str],
+    conflicts: list[str],
+    no_manifest: list[str],
+    push_force: bool,
+) -> list[str]:
+    """Files to hold back from the push so it cannot clobber remote-side changes.
+
+    Forcing returns an empty list, deliberately overwriting the remote with
+    local state — this is the old 'deploy --force' behaviour.
+    """
+    if push_force:
+        return []
+
+    return remote_only + conflicts + no_manifest
+
+
 def filter_paths_by_only(paths: list[str], only_patterns: list[str]) -> list[str]:
     """Restrict paths to those matching any --only pattern, preserving order.
 
@@ -2800,6 +2817,13 @@ def cmd_sync(args):
 
     do_apply = args.apply or args.yes
 
+    # Direction flags. --push-force implies --push-only: forcing a push while
+    # also pulling the very files being overwritten is contradictory.
+    only = args.only or []
+    push_force = args.push_force
+    push_only = args.push_only or push_force
+    pull_only = args.pull_only
+
     repo_errors = _check_repos_clean()
     if repo_errors:
         if do_apply:
@@ -2891,7 +2915,16 @@ def cmd_sync(args):
         if pull_ignore:
             deleted_files = [f for f in deleted_files if not _ign(f)]
 
+        # Narrow to --only patterns, so display and apply stay in agreement
+        if only:
+            remote_only_files = filter_paths_by_only(remote_only_files, only)
+            local_only_files = filter_paths_by_only(local_only_files, only)
+            conflict_files = filter_paths_by_only(conflict_files, only)
+            no_manifest_files = filter_paths_by_only(no_manifest_files, only)
+            deleted_files = filter_paths_by_only(deleted_files, only)
+
         actually_deleted = [fp for fp in deleted_files if fp in manifest_files]
+        not_yet_deployed = [fp for fp in deleted_files if fp not in manifest_files]
 
         # Detect new remote files
         new_remote_files = []
@@ -2909,9 +2942,18 @@ def cmd_sync(args):
                 continue
             new_remote_files.append(rel)
 
+        new_remote_files = filter_paths_by_only(new_remote_files, only)
+
         # Classify pullable files
         changed_files = remote_only_files + conflict_files
         can_pull, cannot_pull = _classify_pullable(changed_files, conflict_files, provenance, manifest_files)
+
+        # Direction flags gate what is actionable, not what is displayed
+        if push_only:
+            can_pull = []
+            new_remote_files_to_place = []
+        else:
+            new_remote_files_to_place = new_remote_files
 
         # Compute line stats for display
         line_stats = {}
@@ -2990,6 +3032,11 @@ def cmd_sync(args):
             for fp in actually_deleted:
                 info(f"  {Color.RED}D {Color.RESET} {fp}")
 
+        if not_yet_deployed:
+            print(f"\n  {len(not_yet_deployed)} not yet deployed:")
+            for fp in not_yet_deployed:
+                info(f"  {Color.DIM}- {Color.RESET} {fp}")
+
         if unchanged_count:
             print(f"\n  {unchanged_count} file(s) unchanged")
 
@@ -3031,15 +3078,21 @@ def cmd_sync(args):
 
         # --- Confirmation ---
         pull_count = len(can_pull)
-        deploy_count = len(local_only_files)
+        deploy_count = 0 if pull_only else len(local_only_files)
         if not args.yes:
             prompt_parts = []
             if pull_count:
                 prompt_parts.append(f"pull {pull_count}")
-            if new_remote_files:
-                prompt_parts.append(f"place {len(new_remote_files)} new")
+            if new_remote_files_to_place:
+                prompt_parts.append(f"place {len(new_remote_files_to_place)} new")
             if deploy_count:
                 prompt_parts.append(f"deploy {deploy_count}")
+            if push_force:
+                prompt_parts.append("FORCE-overwrite remote changes")
+            if not prompt_parts:
+                print("\nNothing to do for the requested direction.")
+                deployer.stop_multiplexing()
+                return
             prompt = " and ".join(prompt_parts) + " file(s)"
             response = input(f"\n{prompt}? [y/N]: ").strip().lower()
             if response != "y":
@@ -3054,7 +3107,9 @@ def cmd_sync(args):
             _, pull_applied = _apply_pull_files(can_pull, provenance, remote_dir, local_dir, manifest_files)
 
         # --- Phase 1b: Place new remote files ---
-        pull_placed = _place_new_remote_files(new_remote_files, remote_dir, bundle_name, args.yes)
+        pull_placed = _place_new_remote_files(
+            new_remote_files_to_place, remote_dir, bundle_name, args.yes
+        )
 
         # --- Phase 2: Rebuild package after pull ---
         if pull_applied or pull_placed:
@@ -3071,9 +3126,10 @@ def cmd_sync(args):
 
         # --- Phase 3: Deploy local-only changes ---
         deployed_count = 0
-        if deploy_count:
-            # Exclude remote-only, conflicts, and no-manifest from deploy
-            deploy_excludes = remote_only_files + conflict_files + no_manifest_files
+        if not pull_only and (deploy_count or push_force):
+            deploy_excludes = compute_deploy_excludes(
+                remote_only_files, conflict_files, no_manifest_files, push_force
+            )
             changes, _ = deployer.preview(package_dir, extra_excludes=deploy_excludes)
             if changes:
                 print(f"\nBacking up remote files...")
@@ -3187,6 +3243,28 @@ def main():
     p_sync.add_argument("-v", "--verbose", action="store_true", help="Show diffs for changed files")
     p_sync.add_argument("--apply", action="store_true", help="Execute sync (default: preview only)")
     p_sync.add_argument("-y", "--yes", action="store_true", help="Sync without confirmation (implies --apply)")
+    p_sync.add_argument(
+        "--only",
+        action="append",
+        metavar="PATTERN",
+        help="Restrict to paths matching PATTERN (repeatable, e.g. --only '.local/bin/')",
+    )
+    p_sync_dir = p_sync.add_mutually_exclusive_group()
+    p_sync_dir.add_argument(
+        "--pull-only",
+        action="store_true",
+        help="Only write remote changes back locally; skip the push",
+    )
+    p_sync_dir.add_argument(
+        "--push-only",
+        action="store_true",
+        help="Only push local changes; still compares so remote changes are not clobbered",
+    )
+    p_sync.add_argument(
+        "--push-force",
+        action="store_true",
+        help="Push even files changed on the remote, overwriting them (implies --push-only)",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
     args = parser.parse_args()

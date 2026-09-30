@@ -58,6 +58,7 @@ format_size = dotfiles_bundle.format_size
 read_last_sync = dotfiles_bundle.read_last_sync
 bundle_sync_status = dotfiles_bundle.bundle_sync_status
 filter_paths_by_only = dotfiles_bundle.filter_paths_by_only
+compute_deploy_excludes = dotfiles_bundle.compute_deploy_excludes
 BundleConfig = dotfiles_bundle.BundleConfig
 BundleResolver = dotfiles_bundle.BundleResolver
 FileResolver = dotfiles_bundle.FileResolver
@@ -2066,3 +2067,39 @@ class TestFilterPathsByOnly:
 
         # THEN order is unchanged, not sorted
         assert result == [".local/bin/zzz", ".local/bin/aaa", ".local/bin/mmm"]
+
+
+class TestComputeDeployExcludes:
+    """Tests for which files are held back from the push phase of a sync."""
+
+    def test_compute_deploy_excludes_should_hold_back_remote_changed_files(self):
+        # GIVEN files that changed on the remote, conflict, or have no manifest
+        remote_only = [".zshrc"]
+        conflicts = [".tmux.conf"]
+        no_manifest = [".vimrc"]
+
+        # WHEN not forcing
+        result = compute_deploy_excludes(remote_only, conflicts, no_manifest, push_force=False)
+
+        # THEN all three are held back so the push cannot clobber them
+        assert sorted(result) == [".tmux.conf", ".vimrc", ".zshrc"]
+
+    def test_compute_deploy_excludes_should_return_empty_when_forcing(self):
+        # GIVEN the same remote-changed files
+        remote_only = [".zshrc"]
+        conflicts = [".tmux.conf"]
+        no_manifest = [".vimrc"]
+
+        # WHEN forcing the push
+        result = compute_deploy_excludes(remote_only, conflicts, no_manifest, push_force=True)
+
+        # THEN nothing is held back
+        assert result == []
+
+    def test_compute_deploy_excludes_should_be_empty_when_nothing_changed_remotely(self):
+        # GIVEN no remote-side changes
+        # WHEN
+        result = compute_deploy_excludes([], [], [], push_force=False)
+
+        # THEN
+        assert result == []
