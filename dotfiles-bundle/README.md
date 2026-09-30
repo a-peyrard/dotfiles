@@ -27,11 +27,21 @@ dotfiles-bundle show server -v
 # Build a tarball
 dotfiles-bundle build server
 
-# Preview deployment (dry-run)
-dotfiles-bundle deploy server -n
+# Show how long ago each bundle was synced
+dotfiles-bundle status
 
-# Deploy to configured destination
-dotfiles-bundle deploy server
+# Preview a bidirectional sync (dry-run by default)
+dotfiles-bundle sync server
+
+# Execute it
+dotfiles-bundle sync server --apply
+
+# One direction only
+dotfiles-bundle sync server --pull-only --apply
+dotfiles-bundle sync server --push-only --apply
+
+# Restrict to a subset of paths
+dotfiles-bundle sync server --only '.local/bin/' --apply
 ```
 
 ## How It Works
