@@ -57,6 +57,7 @@ deep_merge = dotfiles_bundle.deep_merge
 format_size = dotfiles_bundle.format_size
 read_last_sync = dotfiles_bundle.read_last_sync
 bundle_sync_status = dotfiles_bundle.bundle_sync_status
+filter_paths_by_only = dotfiles_bundle.filter_paths_by_only
 BundleConfig = dotfiles_bundle.BundleConfig
 BundleResolver = dotfiles_bundle.BundleResolver
 FileResolver = dotfiles_bundle.FileResolver
@@ -1997,3 +1998,71 @@ class TestBundleSyncStatus:
         assert status.last_sync is None
         assert status.days_ago is None
         assert status.stale is True
+
+
+class TestFilterPathsByOnly:
+    """Tests for restricting a pull to paths matching --only patterns."""
+
+    def test_filter_paths_by_only_should_return_all_paths_when_no_patterns(self):
+        # GIVEN no --only patterns
+        paths = [".local/bin/nvc", ".config/nvim/init.lua", ".zshrc"]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [])
+
+        # THEN
+        assert result == paths
+
+    def test_filter_paths_by_only_should_keep_only_matching_paths(self):
+        # GIVEN a mix of paths and one pattern
+        paths = [".local/bin/nvc", ".config/nvim/init.lua", ".zshrc"]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [".local/bin/*"])
+
+        # THEN
+        assert result == [".local/bin/nvc"]
+
+    def test_filter_paths_by_only_should_match_directory_patterns_recursively(self):
+        # GIVEN a trailing-slash directory pattern
+        paths = [
+            ".config/nvim/init.lua",
+            ".config/nvim/lua/plugins/review.lua",
+            ".config/starship.toml",
+        ]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [".config/nvim/"])
+
+        # THEN nested files are included too
+        assert result == [".config/nvim/init.lua", ".config/nvim/lua/plugins/review.lua"]
+
+    def test_filter_paths_by_only_should_accept_multiple_patterns(self):
+        # GIVEN two patterns
+        paths = [".local/bin/nvc", ".config/nvim/init.lua", ".zshrc"]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [".local/bin/*", ".zshrc"])
+
+        # THEN
+        assert result == [".local/bin/nvc", ".zshrc"]
+
+    def test_filter_paths_by_only_should_return_empty_when_nothing_matches(self):
+        # GIVEN a pattern matching none of the paths
+        paths = [".local/bin/nvc", ".zshrc"]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [".config/ghostty/*"])
+
+        # THEN
+        assert result == []
+
+    def test_filter_paths_by_only_should_preserve_input_order(self):
+        # GIVEN paths in a deliberate order
+        paths = [".local/bin/zzz", ".local/bin/aaa", ".local/bin/mmm"]
+
+        # WHEN
+        result = filter_paths_by_only(paths, [".local/bin/"])
+
+        # THEN order is unchanged, not sorted
+        assert result == [".local/bin/zzz", ".local/bin/aaa", ".local/bin/mmm"]

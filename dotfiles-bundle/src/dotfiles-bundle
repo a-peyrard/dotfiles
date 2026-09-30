@@ -9,6 +9,7 @@ Usage:
     dotfiles-bundle build <name>             Build bundle tarball
     dotfiles-bundle deploy <name>            Preview deployment (--apply to deploy)
     dotfiles-bundle pull <name>              Show remote changes (--apply to write back)
+                                             (--only PATTERN to restrict to a subset)
 """
 
 from __future__ import annotations
@@ -225,6 +226,18 @@ def glob_match(pattern: str, path: str) -> bool:
         return bool(re.match(f"^{regex}$", path))
 
     return fnmatch(path, pattern)
+
+
+def filter_paths_by_only(paths: list[str], only_patterns: list[str]) -> list[str]:
+    """Restrict paths to those matching any --only pattern, preserving order.
+
+    An empty pattern list means no filtering, so callers can pass args.only
+    straight through whether or not the flag was given.
+    """
+    if not only_patterns:
+        return list(paths)
+
+    return [p for p in paths if any(glob_match(pat, p) for pat in only_patterns)]
 
 
 # ============================================================================
@@ -2501,6 +2514,15 @@ def cmd_pull(args):
             no_manifest_files = [f for f in no_manifest_files if not _ign(f)]
             deleted_files = [f for f in deleted_files if not _ign(f)]
 
+        # Narrow to --only patterns, so display and apply stay in agreement
+        only = args.only or []
+        if only:
+            remote_only_files = filter_paths_by_only(remote_only_files, only)
+            local_only_files = filter_paths_by_only(local_only_files, only)
+            conflict_files = filter_paths_by_only(conflict_files, only)
+            no_manifest_files = filter_paths_by_only(no_manifest_files, only)
+            deleted_files = filter_paths_by_only(deleted_files, only)
+
         # Compute line stats for files we'll display
         line_stats = {}
         for fp in remote_only_files + conflict_files + no_manifest_files:
@@ -2537,9 +2559,15 @@ def cmd_pull(args):
                 continue
             new_remote_files.append(rel)
 
+        new_remote_files = filter_paths_by_only(new_remote_files, only)
+
         if not changed_files and not local_only_files and not new_remote_files and not deleted_files:
-            print("\nNo changes detected. Remote matches local.")
-            log_operation(bundle_name, "pull", "no changes")
+            if only:
+                print(f"\nNo changes matching --only {' '.join(repr(p) for p in only)}.")
+                log_operation(bundle_name, "pull", f"no changes matching --only")
+            else:
+                print("\nNo changes detected. Remote matches local.")
+                log_operation(bundle_name, "pull", "no changes")
             return
 
         manifest_files = manifest.get("files", {}) if manifest else {}
@@ -3145,6 +3173,12 @@ def main():
     p_pull.add_argument("-v", "--verbose", action="store_true", help="Show diffs for changed files")
     p_pull.add_argument("--apply", action="store_true", help="Write changes back to source files (default: show only)")
     p_pull.add_argument("-y", "--yes", action="store_true", help="Apply without confirmation (implies --apply)")
+    p_pull.add_argument(
+        "--only",
+        action="append",
+        metavar="PATTERN",
+        help="Restrict to paths matching PATTERN (repeatable, e.g. --only '.local/bin/')",
+    )
     p_pull.set_defaults(func=cmd_pull)
 
     # sync
