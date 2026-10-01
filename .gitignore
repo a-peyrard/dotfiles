@@ -52,6 +52,7 @@ links/.claude/personas/ai-msl.md
 links/.claude/personas/ai-dataeng.md
 links/.claude/commands/knowledge-harvest.md
 links/.claude/commands/noob.md
+links/.claude/commands/commit-sync.md
 # Private (via dotfiles-private-link) or agent-market symlinks
 links/.claude/skills/
 lib/
