@@ -594,7 +594,7 @@ vim.notify('Set $# tour breakpoint(s)', vim.log.levels.INFO)"
             # Get the D-number for the target commit
             PHAB_DIFF=$(cd "$REPO_FOR_PUBLISH" && sl log -r "${PUBLISH_REV}" -T '{phabdiff}' 2>/dev/null || true)
             if [ -z "$PHAB_DIFF" ]; then
-                echo "Error: no Phabricator diff found for ${PUBLISH_REV}" >&2
+                echo "Error: no published diff found for ${PUBLISH_REV}" >&2
                 exit 1
             fi
 
